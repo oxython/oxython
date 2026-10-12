@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rin Arakaki <rnarkkx@gmail.com>
+Date: Mon, 12 Oct 2026 07:34:41 +0000
+Subject: [PATCH] oxython: add struct, union and enum items
+
+
+diff --git a/Cython/Compiler/Parsing.py b/Cython/Compiler/Parsing.py
+index 4438128f0..4603a1f0f 100644
+--- a/Cython/Compiler/Parsing.py
++++ b/Cython/Compiler/Parsing.py
+@@ -4033,7 +4033,7 @@ def p_oxython_statement(s: PyrexScanner, ctx, pos, decorators):
+ 
+ # words that can start an oxython item
+ _oxython_item_words = cython.declare(frozenset, frozenset((
+-    'fn', 'let', 'static', 'const', 'type')))
++    'fn', 'let', 'static', 'const', 'type', 'struct', 'union', 'enum', 'packed')))
+ 
+ _oxython_cdef_levels = cython.declare(tuple, (
+     'module', 'module_pxd', 'function', 'c_class', 'c_class_pxd', 'cpp_class'))
+@@ -4054,6 +4054,13 @@ def looking_at_oxython_item(s: PyrexScanner, ctx) -> cython.bint:
+     if word == 'const' and (ctx.cdef_flag or ctx.level == 'cpp_class' or ctx.visibility == 'extern'):
+         # in 'cdef' blocks, extern blocks and C++ classes 'const' is the C qualifier
+         return next_word == 'fn'
++    if word in struct_enum_union and ctx.level == 'cpp_class':
++        # nested types in C++ classes keep their existing parser
++        return False
++    if word == 'enum':
++        return next_sy in ('IDENT', ':', 'class')
++    if word == 'packed':
++        return next_word == 'struct'
+     return next_sy == 'IDENT'
+ 
+ 
+@@ -4073,6 +4080,13 @@ def p_oxython_item(s: PyrexScanner, pos, ctx, decorators):
+         node = p_oxython_const(s, pos, ctx)
+     elif s.looking_at_keyword('type'):
+         node = p_oxython_type_alias(s, pos, ctx)
++    elif s.sy == 'IDENT' and s.systring in struct_enum_union:
++        if ctx.level not in ('module', 'module_pxd') and not (
++                ctx.level == 'cpp_class' and s.systring == 'enum'):
++            error(pos, "C struct/union/enum definition not allowed here")
++        if ctx.overridable:
++            error(pos, "C struct/union/enum cannot be declared cpdef")
++        node = p_struct_enum(s, pos, ctx)
+     else:
+         s.error("Expected an item")
+ 

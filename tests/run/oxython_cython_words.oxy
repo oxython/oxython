@@ -1,0 +1,25 @@
+// mode: run
+// tag: oxython
+
+use cython
+
+fused Number:
+    i32
+    f64
+
+fn Number twice(Number x):
+    return 2 * x
+
+/// 'fused Name:' declares a fused type, like 'ctypedef fused'.
+///
+/// >>> test_fused()
+/// (4, 5.0)
+fn test_fused():
+    return twice(<i32>2), twice(<f64>2.5)
+
+/// 'class' is an ordinary Python class.
+///
+/// >>> p = PlainPython(); p.anything = 1; p.anything
+/// 1
+class PlainPython:
+    pass

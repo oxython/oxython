@@ -1,0 +1,51 @@
+// mode: run
+// tag: oxython
+
+use cython
+
+/// >>> exclusive(4)
+/// [0, 1, 2, 3]
+fn exclusive(n):
+    return [i for i in 0..n]
+
+/// >>> inclusive(4)
+/// [1, 2, 3, 4]
+fn inclusive(n):
+    return list(1..=n)
+
+/// Ranges over C integers become plain C loops.
+///
+/// >>> c_loop(5)
+/// 10
+#[cython.test_assert_path_exists("//ForFromStatNode")]
+fn c_loop(i32 n):
+    let i32 i, total = 0
+    for i in 0..n:
+        total += i
+    return total
+
+/// '..' binds looser than arithmetic and tighter than comparisons.
+///
+/// >>> precedence(3)
+/// ([0, 1, 2, 3, 4, 5], True, False)
+fn precedence(n):
+    return list(0..n*2), 2 in 0..n, n in 0..n
+
+/// Integer literals next to '..' are not floats.
+///
+/// >>> literal_bounds()
+/// ([1, 2, 3, 4], [10, 11])
+fn literal_bounds():
+    return list(1..5), list(10..=11)
+
+/// In a subscript a range is a slice.
+///
+/// >>> slicing([0, 10, 20, 30, 40], 1, 3)
+/// ([10, 20], [10, 20, 30], 'ell')
+fn slicing(seq, a, b):
+    return seq[a..b], seq[a..=b], "hello"[1..4]
+
+/// >>> floats_unchanged()
+/// (1.0, 0.5, 1.5)
+fn floats_unchanged():
+    return 1., .5, 1.5

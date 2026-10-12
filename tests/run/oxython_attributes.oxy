@@ -1,0 +1,76 @@
+// mode: run
+// tag: oxython
+
+use cython
+
+fn twice(f):
+    fn wrapper(*args):
+        return 2 * f(*args)
+    return wrapper
+
+/// >>> plus_one(1)
+/// 4
+#[twice]
+fn plus_one(x):
+    return x + 1
+
+/// Several attributes apply outermost first.
+///
+/// >>> mixed(1)
+/// 4
+#[twice]
+#[twice]
+fn mixed(x):
+    return x
+
+/// Attributes combine on extension types.
+///
+/// >>> p = Point(1, 2)
+/// >>> p.total()
+/// 3
+/// >>> class Sub(Point): pass
+/// Traceback (most recent call last):
+/// TypeError: type 'oxython_attributes.Point' is not an acceptable base type
+#[pyclass]
+#[cython.final]
+struct Point:
+    i32 x
+    i32 y
+
+impl Point:
+    fn __init__(self, x, y):
+        self.x = x
+        self.y = y
+
+    fn total(self):
+        return self.x + self.y
+
+/// >>> first([5, 6])
+/// 5
+#[cython.boundscheck(False)]
+#[cython.wraparound(False)]
+fn first(list values):
+    return values[0]
+
+/// >>> Counter.make().get()
+/// 7
+#[pyclass]
+struct Counter:
+    i32 value
+
+impl Counter:
+    #[staticmethod]
+    fn make():
+        c = Counter()
+        c.value = 7
+        return c
+
+    fn get(self):
+        return self.value
+
+/// >>> comments_are_not_attributes()
+/// 1
+fn comments_are_not_attributes():
+    // #[not an attribute]
+    /* #[nor this] */
+    return 1

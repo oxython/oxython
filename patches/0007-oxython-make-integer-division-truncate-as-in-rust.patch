@@ -1,0 +1,134 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rin Arakaki <rnarkkx@gmail.com>
+Date: Mon, 12 Oct 2026 07:34:39 +0000
+Subject: [PATCH] oxython: make integer division truncate, as in Rust
+
+
+diff --git a/Cython/Compiler/ExprNodes.py b/Cython/Compiler/ExprNodes.py
+index 166e7a5ed..71b6c474a 100644
+--- a/Cython/Compiler/ExprNodes.py
++++ b/Cython/Compiler/ExprNodes.py
+@@ -13435,9 +13435,14 @@ class DivNode(NumBinopNode):
+     ctruedivision = False
+     cdivision_warnings = False
+     zerodivision_check = None
++    # oxython: '/' and '%' on integers truncate towards zero, as in Rust.
++    # Division by zero still raises ZeroDivisionError.
++    truncating_division = False
+ 
+     def find_compile_time_binary_operator(self, op1, op2):
+         func = compile_time_binary_operators[self.operator]
++        if self.truncating_division and _both_ints(op1, op2):
++            return _truncating_div if self.operator == '/' else _truncating_mod
+         if self.operator == '/' and self.truedivision is None:
+             # => true div for floats, floor div for integers
+             if isinstance(op1, int) and isinstance(op2, int):
+@@ -13495,7 +13500,15 @@ class DivNode(NumBinopNode):
+ 
+         if self.is_cpp_operation():
+             self.cdivision = True
+-        if not self.type.is_pyobject:
++        if self.truncating_division and self.type.is_int and not self.is_cpp_operation():
++            # C truncating division, with the zero check kept
++            self.cdivision = True
++            self.zerodivision_check = (
++                not self.operand2.has_constant_result() or self.operand2.constant_result == 0)
++            if self.zerodivision_check:
++                self.operand1 = self.operand1.coerce_to_simple(env)
++                self.operand2 = self.operand2.coerce_to_simple(env)
++        elif not self.type.is_pyobject:
+             self.zerodivision_check = (
+                 self.cdivision is None and not env.directives['cdivision']
+                 and (not self.operand2.has_constant_result() or
+@@ -13507,6 +13520,9 @@ class DivNode(NumBinopNode):
+         return result  # should either be self, or wrap self
+ 
+     def compute_c_result_type(self, type1, type2):
++        if self.truncating_division and type1.is_int and type2.is_int:
++            # oxython: integer / integer stays an integer
++            return NumBinopNode.compute_c_result_type(self, type1, type2)
+         if self.operator == '/' and self.ctruedivision and not type1.is_cpp_class and not type2.is_cpp_class:
+             if not type1.is_float and not type2.is_float:
+                 widest_type = PyrexTypes.widest_numeric_type(type1, PyrexTypes.c_double_type)
+@@ -13632,6 +13648,22 @@ _safe_bytes_formats = frozenset({
+ })
+ 
+ 
++def _both_ints(a, b):
++    return (isinstance(a, int) and isinstance(b, int)
++            and not isinstance(a, bool) and not isinstance(b, bool))
++
++
++def _truncating_div(a, b):
++    # integer division rounding towards zero (C, Rust)
++    q = abs(a) // abs(b)
++    return q if (a >= 0) == (b >= 0) else -q
++
++
++def _truncating_mod(a, b):
++    # remainder with the sign of the dividend (C, Rust)
++    return a - b * _truncating_div(a, b)
++
++
+ class ModNode(DivNode):
+     #  '%' operator.
+ 
+diff --git a/Cython/Compiler/Nodes.py b/Cython/Compiler/Nodes.py
+index dbab7c4f0..11c48d0c4 100644
+--- a/Cython/Compiler/Nodes.py
++++ b/Cython/Compiler/Nodes.py
+@@ -6839,9 +6839,14 @@ class InPlaceAssignmentNode(AssignmentNode):
+         self.lhs.annotate(code)
+         self.rhs.annotate(code)
+ 
++    truncating_division = False  # oxython '/=' and '%=' on integers
++
+     def create_binop_node(self):
+         from . import ExprNodes
+-        return ExprNodes.binop_node(self.pos, self.operator, self.lhs, self.rhs)
++        node = ExprNodes.binop_node(self.pos, self.operator, self.lhs, self.rhs)
++        if self.truncating_division:
++            node.truncating_division = True
++        return node
+ 
+ 
+ class PrintStatNode(StatNode):
+diff --git a/Cython/Compiler/ParseTreeTransforms.py b/Cython/Compiler/ParseTreeTransforms.py
+index 3ea6face3..a07263b6d 100644
+--- a/Cython/Compiler/ParseTreeTransforms.py
++++ b/Cython/Compiler/ParseTreeTransforms.py
+@@ -3130,6 +3130,8 @@ class ExpandInplaceOperators(EnvTransform):
+                                      operand1 = dup,
+                                      operand2 = rhs,
+                                      inplace=True)
++        if node.truncating_division:
++            binop.truncating_division = True
+ 
+         # Manually analyse types for new node.
+         lhs.is_target = True
+diff --git a/Cython/Compiler/Parsing.py b/Cython/Compiler/Parsing.py
+index 7eb131a4a..6672501fe 100644
+--- a/Cython/Compiler/Parsing.py
++++ b/Cython/Compiler/Parsing.py
+@@ -110,6 +110,9 @@ def p_binop_expr(s: PyrexScanner, ops, p_sub_expr):
+                 n1.truedivision = True
+             else:
+                 n1.truedivision = None  # unknown
++        if s.rust_comments and op in ('/', '%'):
++            # oxython: integer division truncates, as in Rust
++            n1.truncating_division = True
+     return n1
+ 
+ 
+@@ -1768,7 +1771,10 @@ def p_expression_or_assignment(s: PyrexScanner):
+                 rhs = p_yield_expression(s)
+             else:
+                 rhs = p_testlist(s)
+-            return Nodes.InPlaceAssignmentNode(lhs.pos, operator=operator, lhs=lhs, rhs=rhs)
++            node = Nodes.InPlaceAssignmentNode(lhs.pos, operator=operator, lhs=lhs, rhs=rhs)
++            if s.rust_comments and operator in ('/', '%'):
++                node.truncating_division = True
++            return node
+         expr = expr_list[0]
+         return Nodes.ExprStatNode(expr.pos, expr=expr)
+ 

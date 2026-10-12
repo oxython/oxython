@@ -1,0 +1,49 @@
+{
+    "name": "oxython",
+    "displayName": "oxython",
+    "description": "Syntax highlighting for Cython with the oxython Rust-style syntax",
+    "private": true,
+    "version": "0.2.0",
+    "publisher": "oxython",
+    "repository": {
+        "url": "https://github.com/oxython/oxython.git",
+        "type": "git"
+    },
+    "license": "Apache-2.0",
+    "keywords": [
+        "cython",
+        "oxython"
+    ],
+    "categories": [
+        "Programming Languages"
+    ],
+    "engines": {
+        "vscode": "^1.84.0"
+    },
+    "scripts": {
+        "package": "npx @vscode/vsce package -o oxython.vsix"
+    },
+    "contributes": {
+        "languages": [
+            {
+                "id": "oxython",
+                "extensions": [
+                    ".oxy",
+                    ".oxd",
+                    ".oxi"
+                ],
+                "aliases": [
+                    "oxython"
+                ],
+                "configuration": "language-configuration.json"
+            }
+        ],
+        "grammars": [
+            {
+                "language": "oxython",
+                "scopeName": "source.oxython",
+                "path": "oxython.tmLanguage.json"
+            }
+        ]
+    }
+}

@@ -1,0 +1,16 @@
+// mode: error
+// tag: oxython
+
+cimport cython
+from libc.math cimport sqrt
+cdef int counter = 0
+ctypedef int Index
+DEF SIZE = 4
+
+_ERRORS = u"""
+4:0: 'cimport' is not used in oxython files; write 'use module::name' instead
+5:0: 'cimport' is not used in oxython files; write 'use module::name' instead
+6:0: 'cdef' is not used in oxython files; declare with fn, let, static, struct, union, enum, impl, cppclass, fused or extern instead
+7:0: 'ctypedef' is not used in oxython files; write 'type Name = ...' instead
+8:0: 'DEF' is not used in oxython files; write 'const NAME = ...' instead
+"""

@@ -1,0 +1,37 @@
+// mode: run
+// tag: oxython
+
+use libc::stdlib::{malloc, free}
+use cython
+
+fn i32 sum(r&i32 values, usize n):
+    let i32 total = 0
+    let usize i
+    for i in range(n):
+        total += values[i]
+    return total
+
+fn void fill(r&mut i32 values, usize n, i32 value):
+    let usize i
+    for i in range(n):
+        values[i] = value
+
+/// 'r&T' is a pointer to const T, 'r&mut T' a pointer to T.
+///
+/// >>> test_raw_pointers()
+/// (12, 'const int *', 'int *')
+fn test_raw_pointers():
+    let r&mut i32 data = <r&mut i32>malloc(4 * sizeof(i32))
+    let r&i32 view = data
+    fill(data, 4, 3)
+    result = sum(view, 4)
+    free(data)
+    return result, cython.typeof(view), cython.typeof(data)
+
+/// >>> test_pointer_to_pointer()
+/// 7
+fn test_pointer_to_pointer():
+    let i32 x = 7
+    let r&mut i32 p = &x
+    let r&r&mut i32 pp = &p
+    return pp[0][0]

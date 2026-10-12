@@ -1,0 +1,134 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rin Arakaki <rnarkkx@gmail.com>
+Date: Mon, 12 Oct 2026 07:34:42 +0000
+Subject: [PATCH] oxython: add inner attributes for directives and build
+ settings
+
+
+diff --git a/Cython/Build/Dependencies.py b/Cython/Build/Dependencies.py
+index 5b733c0ba..5ac4823a5 100644
+--- a/Cython/Build/Dependencies.py
++++ b/Cython/Build/Dependencies.py
+@@ -179,6 +179,23 @@ def _legacy_strtobool(val):
+         raise ValueError("invalid truth value %r" % (val,))
+ 
+ 
++_match_oxython_distutils_attribute = re.compile(
++    r"^#!\[\s*distutils\s*::\s*(\w+)\s*=\s*(.*?)\s*\]\s*$").match
++
++
++def _oxython_attribute_value(value):
++    # '"c++"' -> 'c++', '["m", "z"]' -> 'm, z', 'true' -> 'True'
++    import ast
++    value = re.sub(r"\btrue\b", "True", re.sub(r"\bfalse\b", "False", value))
++    try:
++        value = ast.literal_eval(value)
++    except (ValueError, SyntaxError):
++        return value
++    if isinstance(value, (list, tuple)):
++        return ", ".join(str(v) for v in value)
++    return str(value)
++
++
+ class DistutilsInfo:
+ 
+     def __init__(self, source=None, exn=None):
+@@ -191,7 +208,13 @@ class DistutilsInfo:
+                     continue  # '//' comments in oxython files
+                 if line[0] != '#':
+                     break
+-                line = line[1:].lstrip()
++                oxython_setting = _match_oxython_distutils_attribute(line)
++                if oxython_setting:
++                    # oxython: #![distutils::key = value]
++                    key, value = oxython_setting.groups()
++                    line = "distutils: %s = %s" % (key, _oxython_attribute_value(value))
++                else:
++                    line = line[1:].lstrip()
+                 kind = next((k for k in ("distutils:","cython:") if line.startswith(k)), None)
+                 if kind is not None:
+                     key, _, value = [s.strip() for s in line[len(kind):].partition('=')]
+diff --git a/Cython/Compiler/Lexicon.py b/Cython/Compiler/Lexicon.py
+index 304d76f76..f53e5ccc1 100644
+--- a/Cython/Compiler/Lexicon.py
++++ b/Cython/Compiler/Lexicon.py
+@@ -198,6 +198,7 @@ def make_lexicon(oxython=False, rust_comments=False):
+             indent_rules.append((Opt(spaces) + Str("/**"), Method('begin_doc_block_comment')))
+             # blank and comment lines may separate a doc comment from its item
+             indent_rules.append((Opt(spaces) + Opt(comment) + lineterm, Method('blank_line')))
++            oxython_rules.append((Str("#!["), Method('open_bracket_action')))
+         oxython_rules.append((Str("#["), Method('open_bracket_action')))
+ 
+     return Lexicon(oxython_rules + [
+diff --git a/Cython/Compiler/Parsing.py b/Cython/Compiler/Parsing.py
+index 15835f82b..b6828a0d0 100644
+--- a/Cython/Compiler/Parsing.py
++++ b/Cython/Compiler/Parsing.py
+@@ -4750,6 +4750,10 @@ def p_module(s: PyrexScanner, pxd, full_module_name, ctx=Ctx):
+     pos = s.position()
+ 
+     directive_comments = p_compiler_directive_comments(s)
++    if s.oxython:
++        if s.context.language_level is None:
++            s.context.set_language_level('3')
++        directive_comments.update(p_oxython_inner_attributes(s))
+     s.parse_comments = False
+ 
+     if s.context.language_level is None:
+@@ -4769,6 +4773,56 @@ def p_module(s: PyrexScanner, pxd, full_module_name, ctx=Ctx):
+                       directive_comments = directive_comments)
+ 
+ 
++def p_oxython_inner_attributes(s: PyrexScanner) -> dict:
++    # Module level '#![...]' attributes replace Cython's header comments:
++    #   #![cython::boundscheck(false)]       # cython: boundscheck=False
++    #   #![cython::boundscheck = false]
++    #   #![distutils::language = "c++"]      # distutils: language=c++  (read by cythonize)
++    directives = {}
++    while s.sy == '#![':
++        pos = s.position()
++        s.next()
++        attribute = p_test(s)
++        value_node = None
++        if s.sy == '=':
++            s.next()
++            value_node = p_test(s)
++        s.expect(']')
++        s.expect_newline("Expected a newline after attribute")
++        if value_node is None and isinstance(attribute, ExprNodes.SimpleCallNode) and len(attribute.args) == 1:
++            attribute, value_node = attribute.function, attribute.args[0]
++        path = []
++        node = attribute
++        while isinstance(node, ExprNodes.AttributeNode):
++            path.append(node.attribute)
++            node = node.obj
++        if not node.is_name or value_node is None:
++            error(pos, "Expected '#![cython::name(value)]' or '#![cython::name = value]'")
++            continue
++        path.append(node.name)
++        path.reverse()
++        if path[0] == 'distutils':
++            continue  # build settings, handled by cythonize
++        if path[0] != 'cython' or len(path) < 2:
++            error(pos, "Unknown inner attribute '%s'" % '::'.join(path))
++            continue
++        name = '.'.join(path[1:])
++        value = value_node.compile_time_value(s.compile_time_env)
++        if name not in Options.directive_types:
++            error(pos, "Unknown compiler directive '%s'" % name)
++            continue
++        if isinstance(value, bool):
++            value = 'True' if value else 'False'
++        try:
++            directives[name] = Options.parse_directive_value(name, str(value))
++        except ValueError as e:
++            error(pos, e.args[0])
++            continue
++        if name == 'language_level':
++            s.context.set_language_level(directives[name])
++    return directives
++
++
+ @cython.cfunc
+ def p_template_definition(s: PyrexScanner) -> tuple:
+     name = p_ident(s)

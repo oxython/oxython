@@ -1,0 +1,45 @@
+// mode: run
+// tag: oxython
+
+/// >>> countdown(3)
+/// [3, 2, 1]
+fn countdown(i32 n):
+    result = []
+    loop:
+        if n == 0:
+            break
+        result.append(n)
+        n -= 1
+    return result
+
+/// 'continue' and early returns work inside 'loop:'.
+///
+/// >>> find_first_even([1, 3, 4, 5])
+/// 4
+/// >>> find_first_even([1, 3])
+fn find_first_even(values):
+    it = iter(values)
+    loop:
+        try:
+            v = next(it)
+        except StopIteration:
+            return None
+        if v % 2:
+            continue
+        return v
+
+/// The body always runs, so 'x' is assigned after the loop.
+///
+/// >>> definitely_assigned()
+/// 1
+fn definitely_assigned():
+    let int x
+    loop:
+        x = 1
+        break
+    return x
+
+/// >>> loop_is_a_name(5)
+/// 5
+fn loop_is_a_name(loop):
+    return loop

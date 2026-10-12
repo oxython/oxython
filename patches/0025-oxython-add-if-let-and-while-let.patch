@@ -1,0 +1,155 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rin Arakaki <rnarkkx@gmail.com>
+Date: Mon, 12 Oct 2026 07:34:44 +0000
+Subject: [PATCH] oxython: add if let and while let
+
+
+diff --git a/Cython/Compiler/Parsing.py b/Cython/Compiler/Parsing.py
+index dd6bc3523..79c292255 100644
+--- a/Cython/Compiler/Parsing.py
++++ b/Cython/Compiler/Parsing.py
+@@ -2182,15 +2182,92 @@ def p_if_statement(s: PyrexScanner):
+     # s.sy == 'if'
+     pos = s.position()
+     s.next()
++    if s.looking_at_keyword('let'):
++        return p_oxython_if_let(s, pos)
+     if_clauses = [p_if_clause(s)]
+     while s.sy == 'elif':
++        elif_pos = s.position()
+         s.next()
++        if s.looking_at_keyword('let'):
++            # the rest of the chain becomes the else branch
++            return Nodes.IfStatNode(pos,
++                if_clauses = if_clauses, else_clause = p_oxython_if_let(s, elif_pos))
+         if_clauses.append(p_if_clause(s))
+     else_clause = p_else_clause(s)
+     return Nodes.IfStatNode(pos,
+         if_clauses = if_clauses, else_clause = else_clause)
+ 
+ 
++def p_oxython_let_pattern(s: PyrexScanner):
++    # let <pattern> = <subject>      (s.sy == 'let')
++    s.next()
++    s.in_let_pattern = True
++    try:
++        pattern = p_patterns(s)
++    finally:
++        s.in_let_pattern = False
++    s.expect('=', "Expected '=' after the pattern in 'let'")
++    subject = p_test(s)
++    return pattern, subject
++
++
++def p_oxython_if_let(s: PyrexScanner, pos):
++    # if let <pattern> = <subject>: ... [elif ...] [else: ...]
++    # is the match statement
++    #   match <subject>:
++    #       case <pattern>: ...
++    #       case _: <elif/else chain>
++    pattern, subject = p_oxython_let_pattern(s)
++    body = p_suite(s)
++    cases = [MatchCaseNodes.MatchCaseNode(pos, pattern=pattern, body=body, guard=None)]
++    else_body = None
++    if s.sy == 'elif':
++        elif_pos = s.position()
++        s.next()
++        if s.looking_at_keyword('let'):
++            else_body = p_oxython_if_let(s, elif_pos)
++        else:
++            if_clauses = [p_if_clause(s)]
++            while s.sy == 'elif':
++                elif_pos = s.position()
++                s.next()
++                if s.looking_at_keyword('let'):
++                    else_body = Nodes.IfStatNode(elif_pos, if_clauses=if_clauses,
++                                                 else_clause=p_oxython_if_let(s, elif_pos))
++                    break
++                if_clauses.append(p_if_clause(s))
++            else:
++                else_body = Nodes.IfStatNode(elif_pos, if_clauses=if_clauses, else_clause=p_else_clause(s))
++    else:
++        else_body = p_else_clause(s)
++    if else_body is not None:
++        cases.append(MatchCaseNodes.MatchCaseNode(
++            pos, pattern=MatchCaseNodes.MatchAndAssignPatternNode(pos), body=else_body, guard=None))
++    return MatchCaseNodes.MatchNode(pos, subject=subject, cases=cases)
++
++
++def p_oxython_while_let(s: PyrexScanner, pos):
++    # while let <pattern> = <subject>: ...
++    # is
++    #   while True:
++    #       match <subject>:
++    #           case <pattern>: ...
++    #           case _: break
++    pattern, subject = p_oxython_let_pattern(s)
++    body = p_suite(s)
++    if s.sy == 'else':
++        s.error("'while let' cannot have an else clause")
++    cases = [
++        MatchCaseNodes.MatchCaseNode(pos, pattern=pattern, body=body, guard=None),
++        MatchCaseNodes.MatchCaseNode(
++            pos, pattern=MatchCaseNodes.MatchAndAssignPatternNode(pos),
++            body=Nodes.StatListNode(pos, stats=[Nodes.BreakStatNode(pos)]), guard=None),
++    ]
++    return Nodes.WhileStatNode(
++        pos, condition=ExprNodes.BoolNode(pos, value=True),
++        body=MatchCaseNodes.MatchNode(pos, subject=subject, cases=cases), else_clause=None)
++
++
+ @cython.cfunc
+ def p_if_clause(s: PyrexScanner):
+     pos = s.position()
+@@ -2214,6 +2291,8 @@ def p_while_statement(s: PyrexScanner):
+     # s.sy == 'while'
+     pos = s.position()
+     s.next()
++    if s.looking_at_keyword('let'):
++        return p_oxython_while_let(s, pos)
+     test = p_namedexpr_test(s)
+     body = p_suite(s)
+     else_clause = p_else_clause(s)
+@@ -5350,7 +5429,7 @@ def p_value_pattern(s: PyrexScanner):
+         s.next()
+         attr = p_ident(s)
+         res = ExprNodes.AttributeNode(attr_pos, obj=res, attribute=attr)
+-    if s.sy in ['(', '=']:
++    if s.sy == '(' or s.sy == '=' and not s.in_let_pattern:
+         s.error("Unexpected symbol '%s'" % s.sy)
+     return MatchCaseNodes.MatchValuePatternNode(pos, value=res)
+ 
+@@ -5509,7 +5588,8 @@ def p_pattern_capture_target(s: PyrexScanner):
+         s.error("Pattern capture target cannot be '_'")
+     target = p_name(s, s.systring)
+     s.next()
+-    if s.sy in ['.', '(', '=']:
++    if s.sy in ['.', '('] or s.sy == '=' and not s.in_let_pattern:
++        # in oxython 'let <pattern> = value' the pattern may be followed by '='
+         s.error("Illegal next symbol '%s'" % s.sy)
+     return target
+ 
+diff --git a/Cython/Compiler/Scanning.pxd b/Cython/Compiler/Scanning.pxd
+index d4bb02c9c..057945a1a 100644
+--- a/Cython/Compiler/Scanning.pxd
++++ b/Cython/Compiler/Scanning.pxd
+@@ -36,6 +36,7 @@ cdef class PyrexScanner(Scanner):
+     cdef public object item_doc
+     cdef public bint raw_ident
+     cdef public bint in_subscript
++    cdef public bint in_let_pattern
+     cdef public source_encoding
+     cdef dict keywords
+     cdef public list[Py_ssize_t] indentation_stack
+diff --git a/Cython/Compiler/Scanning.py b/Cython/Compiler/Scanning.py
+index fc7800cff..84a8dc664 100644
+--- a/Cython/Compiler/Scanning.py
++++ b/Cython/Compiler/Scanning.py
+@@ -361,6 +361,7 @@ class PyrexScanner(Scanner):
+ 
+         self.raw_ident = False
+         self.in_subscript = False
++        self.in_let_pattern = False
+         if filename.is_python_file():
+             self.in_python_file = True
+             keywords = py_reserved_words

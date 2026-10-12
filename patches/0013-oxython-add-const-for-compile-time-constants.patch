@@ -1,0 +1,71 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rin Arakaki <rnarkkx@gmail.com>
+Date: Mon, 12 Oct 2026 07:34:41 +0000
+Subject: [PATCH] oxython: add const for compile time constants
+
+
+diff --git a/Cython/Compiler/Parsing.py b/Cython/Compiler/Parsing.py
+index bfc0e984f..5294af010 100644
+--- a/Cython/Compiler/Parsing.py
++++ b/Cython/Compiler/Parsing.py
+@@ -4051,7 +4051,8 @@ def looking_at_oxython_item(s: PyrexScanner, ctx) -> cython.bint:
+     if word not in _oxython_item_words:
+         return False
+     next_sy, next_word = s.peek()
+-    if word == 'const':
++    if word == 'const' and (ctx.cdef_flag or ctx.level == 'cpp_class' or ctx.visibility == 'extern'):
++        # in 'cdef' blocks, extern blocks and C++ classes 'const' is the C qualifier
+         return next_word == 'fn'
+     return next_sy == 'IDENT'
+ 
+@@ -4068,6 +4069,8 @@ def p_oxython_item(s: PyrexScanner, pos, ctx, decorators):
+         node = p_oxython_fn(s, pos, ctx)
+     elif s.looking_at_keyword('let') or s.looking_at_keyword('static'):
+         node = p_oxython_let(s, pos, ctx)
++    elif s.looking_at_keyword('const'):
++        node = p_oxython_const(s, pos, ctx)
+     else:
+         s.error("Expected an item")
+ 
+@@ -4176,6 +4179,41 @@ def p_oxython_let_auto(s: PyrexScanner, pos):
+     return Nodes.StatListNode(pos, stats=[Nodes.AutoVarDeclNode(pos, names=names)] + stats)
+ 
+ 
++def p_oxython_const(s: PyrexScanner, pos, ctx):
++    # const [<type> | auto] <name> = <compile time expr>
++    # A compile time constant, like 'DEF'.
++    s.next()  # 'const'
++    base_type = None
++    if s.looking_at_keyword('auto'):
++        s.next()
++    elif s.sy == 'IDENT' and s.peek()[0] != '=':
++        base_type = p_c_base_type(s)
++    name = p_ident(s)
++    s.expect('=')
++    expr = p_compile_time_expr(s)
++    if s.compile_time_eval:
++        value = expr.compile_time_value(s.compile_time_env)
++        value = coerce_oxython_const_value(pos, value, base_type)
++        s.compile_time_env.declare(name, value)
++    s.expect_newline("Expected a newline", ignore_semicolon=True)
++    return Nodes.PassStatNode(pos)
++
++
++@cython.cfunc
++def coerce_oxython_const_value(pos, value, base_type):
++    if not isinstance(base_type, Nodes.CSimpleBaseTypeNode) or not base_type.is_basic_c_type:
++        return value
++    if isinstance(value, bool) or not isinstance(value, (int, float)):
++        return value
++    if base_type.name in ('float', 'double') and not base_type.complex:
++        return float(value)
++    if base_type.name in ('char', 'int', 'Py_ssize_t', 'size_t'):
++        if isinstance(value, float):
++            error(pos, "Cannot assign a float value to an integer constant")
++        return value
++    return value
++
++
+ @cython.cfunc
+ def p_decorators(s: PyrexScanner) -> list:
+     decorators = []

@@ -1,0 +1,60 @@
+{
+    "comments": {
+        "lineComment": "//",
+        "blockComment": [
+            "/*",
+            "*/"
+        ]
+    },
+    "brackets": [
+        [
+            "{",
+            "}"
+        ],
+        [
+            "[",
+            "]"
+        ],
+        [
+            "(",
+            ")"
+        ]
+    ],
+    "autoClosingPairs": [
+        {
+            "open": "{",
+            "close": "}"
+        },
+        {
+            "open": "[",
+            "close": "]"
+        },
+        {
+            "open": "(",
+            "close": ")"
+        },
+        {
+            "open": "'",
+            "close": "'",
+            "notIn": [
+                "string",
+                "comment"
+            ]
+        },
+        {
+            "open": "\"",
+            "close": "\"",
+            "notIn": [
+                "string"
+            ]
+        }
+    ],
+    "onEnterRules": [
+        {
+            "beforeText": "^\\s*(?:fn|async fn|struct|union|enum|packed struct|impl|cppclass|fused|extern from|class|if|elif|else|for|while|loop|try|except|finally|with|match|case)\\b.*:\\s*$",
+            "action": {
+                "indent": "indent"
+            }
+        }
+    ]
+}

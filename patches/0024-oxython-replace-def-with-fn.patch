@@ -1,0 +1,96 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rin Arakaki <rnarkkx@gmail.com>
+Date: Mon, 12 Oct 2026 07:34:43 +0000
+Subject: [PATCH] oxython: replace def with fn
+
+
+diff --git a/Cython/Compiler/Parsing.py b/Cython/Compiler/Parsing.py
+index 8c186b42d..dd6bc3523 100644
+--- a/Cython/Compiler/Parsing.py
++++ b/Cython/Compiler/Parsing.py
+@@ -500,7 +500,10 @@ def p_yield_statement(s: PyrexScanner):
+ @cython.cfunc
+ def p_async_statement(s: PyrexScanner, ctx, decorators):
+     # s.sy >> 'async' ...
++    if looking_at_oxython_fn_def(s, ctx):
++        return p_oxython_fn_def(s, ctx, decorators, is_async_def=True)
+     if s.sy == 'def':
++        reject_def_in_oxython(s)
+         # 'async def' statements aren't allowed in pxd files
+         if 'pxd' in ctx.level:
+             s.error('def statement not allowed here')
+@@ -2721,7 +2724,7 @@ def p_statement(s: PyrexScanner, ctx, first_statement: cython.bint = False):
+         if s.sy == '@':
+             # '@' decorators may follow oxython '#[...]' attributes
+             decorators = (decorators or []) + p_decorators(s)
+-        if s.oxython and looking_at_oxython_item(s, ctx):
++        if s.oxython and (looking_at_oxython_fn_def(s, ctx) or looking_at_oxython_item(s, ctx)):
+             return p_oxython_statement(s, ctx, pos, decorators)
+         if not ctx.allow_struct_enum_decorator and s.sy not in ('def', 'cdef', 'cpdef', 'class', 'async'):
+             if s.sy == 'IDENT' and s.systring == 'async':
+@@ -2757,6 +2760,7 @@ def p_statement(s: PyrexScanner, ctx, first_statement: cython.bint = False):
+         if ctx.api:
+             s.error("'api' not allowed with this statement", fatal=False)
+         elif s.sy == 'def':
++            reject_def_in_oxython(s)
+             # def statements aren't allowed in pxd files, except
+             # as part of a cdef class
+             if ('pxd' in ctx.level) and (ctx.level != 'c_class_pxd'):
+@@ -2800,7 +2804,7 @@ def p_statement(s: PyrexScanner, ctx, first_statement: cython.bint = False):
+                     ident_pos = s.position()
+                     # PEP 492 enables the async/await keywords when it spots "async def ..."
+                     s.next()
+-                    if s.sy == 'def':
++                    if s.sy == 'def' or looking_at_oxython_fn_def(s, ctx):
+                         return p_async_statement(s, ctx, decorators)
+                     elif decorators:
+                         s.error("Decorators can only be followed by functions or classes")
+@@ -4155,6 +4159,8 @@ def p_oxython_attributes(s: PyrexScanner) -> list:
+ def p_oxython_statement(s: PyrexScanner, ctx, pos, decorators):
+     # Parse a statement that only exists in oxython files.
+     # Returns None, consuming nothing, if the statement is not one of them.
++    if looking_at_oxython_fn_def(s, ctx):
++        return p_oxython_fn_def(s, ctx, decorators)
+     if looking_at_oxython_item(s, ctx):
+         return p_oxython_item(s, pos, ctx, decorators)
+     if s.looking_at_keyword('loop') and s.peek()[0] == ':':
+@@ -4244,6 +4250,39 @@ def make_oxython_from_cimport(s: PyrexScanner, pos, module_path, level, imported
+         relative_level=level, imported_names=imported_names)
+ 
+ 
++@cython.cfunc
++def looking_at_oxython_fn_def(s: PyrexScanner, ctx) -> cython.bint:
++    # 'fn name(...)' without a return type is a Python function, replacing 'def'.
++    # Where Python functions cannot exist (cdef and extern blocks, C++ classes)
++    # it keeps its C meaning.
++    if not s.looking_at_keyword('fn'):
++        return False
++    if ctx.cdef_flag or ctx.level == 'cpp_class' or ctx.visibility == 'extern':
++        return False
++    fn_sy, fn_word, fn_pos = s.sy, s.systring, s.position()
++    s.next()
++    result = s.sy == 'IDENT' and s.peek()[0] == '('
++    s.put_back(fn_sy, fn_word, fn_pos)
++    return result
++
++
++def p_oxython_fn_def(s: PyrexScanner, ctx, decorators, is_async_def=False):
++    # fn name(args) [-> annotation]: body     (a Python function, like 'def')
++    if 'pxd' in ctx.level and ctx.level != 'c_class_pxd':
++        s.error("Python function not allowed here; give C functions a return type, "
++                "as in 'fn object name(...)'")
++    s.level = ctx.level
++    return p_def_statement(s, decorators, is_async_def=is_async_def)
++
++
++@cython.cfunc
++def reject_def_in_oxython(s: PyrexScanner):
++    # CYTHON_FORCE_OXYTHON checks that existing Cython code still parses,
++    # so it keeps accepting 'def'.
++    if s.oxython and not os.environ.get('CYTHON_FORCE_OXYTHON'):
++        error(s.position(), "'def' is not used in oxython files; write 'fn name(...)' instead")
++
++
+ # words that can start an oxython item
+ _oxython_item_words = cython.declare(frozenset, frozenset((
+     'fn', 'let', 'static', 'const', 'type', 'struct', 'union', 'enum', 'packed')))

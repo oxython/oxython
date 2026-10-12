@@ -1,0 +1,88 @@
+// mode: run
+// tag: oxython
+
+use libc::stdint::{int8_t, int16_t, int32_t, int64_t, uint8_t, uint16_t, uint32_t, uint64_t}
+
+/// Each integer type has exactly the width its name promises.
+///
+/// >>> sizes()
+/// [1, 2, 4, 8, 1, 2, 4, 8]
+fn sizes():
+    return [sizeof(i8), sizeof(i16), sizeof(i32), sizeof(i64),
+            sizeof(u8), sizeof(u16), sizeof(u32), sizeof(u64)]
+
+/// >>> matches_stdint()
+/// True
+fn matches_stdint():
+    return (sizeof(i8) == sizeof(int8_t) and sizeof(i16) == sizeof(int16_t)
+            and sizeof(i32) == sizeof(int32_t) and sizeof(i64) == sizeof(int64_t)
+            and sizeof(u8) == sizeof(uint8_t) and sizeof(u16) == sizeof(uint16_t)
+            and sizeof(u32) == sizeof(uint32_t) and sizeof(u64) == sizeof(uint64_t))
+
+/// >>> pointer_sized()
+/// True
+fn pointer_sized():
+    return sizeof(isize) == sizeof(Py_ssize_t) and sizeof(usize) == sizeof(size_t)
+
+/// >>> wraparound()
+/// (255, -128, 0)
+fn wraparound():
+    let u8 a = 255
+    let i8 b = 127
+    let u16 c = 65535
+    b += 1
+    c += 1
+    return a, b, c
+
+/// >>> floats(1.5)
+/// (1.5, 3.0, True)
+fn floats(f64 x):
+    let f32 y = <f32>x
+    let c_longdouble z = x * 2
+    return y, <f64>z, sizeof(c_longdouble) >= sizeof(f64)
+
+/// >>> complex_types()
+/// ((1+2j), (3-1j), 8, 16)
+fn complex_types():
+    let c64 a = 1 + 2j
+    let c128 b = 3 - 1j
+    let c128 c = b
+    return a, c, sizeof(c64), sizeof(c128)
+
+/// >>> boolean(1)
+/// True
+/// >>> boolean(0)
+/// False
+fn boolean(u2 flag):
+    return flag
+
+/// >>> import array
+/// >>> total(array.array('d', [1.0, 2.5, 3.5]))
+/// 7.0
+fn total(f64[:] values):
+    let f64 acc = 0
+    let isize i
+    for i in range(values.shape[0]):
+        acc += values[i]
+    return acc
+
+/// >>> casts(300)
+/// (44, 300)
+fn casts(x):
+    return <u8><i64>x, <i32>x
+
+/// Raw identifiers keep type words usable as names.
+///
+/// >>> names_stay_usable(5)
+/// 5
+fn names_stay_usable(r#i32):
+    return r#i32
+
+/// The c_* names are C's own types, for talking to C libraries.
+///
+/// >>> c_types()
+/// (True, True, True, True)
+fn c_types():
+    let r&c_char text = b"hi"
+    return (sizeof(c_char) == 1, sizeof(c_int) == sizeof(int),
+            sizeof(c_long) == sizeof(long), sizeof(c_ulonglong) == 8)

@@ -1,0 +1,9 @@
+// mode: error
+// tag: oxython
+
+#[cython.final]
+x = 1
+
+_ERRORS = u"""
+5:0: Decorators can only be followed by functions or classes
+"""

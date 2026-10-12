@@ -1,0 +1,34 @@
+// mode: run
+// tag: oxython, no-cpp
+
+use libc::math::sqrt as root
+
+// Re-declaring C library functions with C linkage clashes with C++ headers,
+// so this test only runs in C mode.
+
+extern fn usize strlen(r&char s)
+
+pub fn i32 exported_add(i32 a, i32 b):
+    return a + b
+
+pub static i32 exported_counter = 3
+
+pub api fn i32 api_twice(i32 x):
+    return 2 * x
+
+pub struct Shape [object ShapeObject, type ShapeType]:
+    pub i32 sides
+
+impl Shape:
+    fn __init__(self, sides):
+        self.sides = sides
+
+/// >>> test_extern_functions()
+/// (3, 2.0)
+fn test_extern_functions():
+    return strlen(b"abc"), root(4)
+
+/// >>> test_public_items()
+/// (5, 3, 8, 4)
+fn test_public_items():
+    return exported_add(2, 3), exported_counter, api_twice(4), Shape(4).sides

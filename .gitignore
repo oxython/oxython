@@ -1,0 +1,5 @@
+__pycache__/
+*.vsix
+editors/vscode/node_modules/
+dist/
+docs/_build/

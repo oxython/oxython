@@ -1,0 +1,96 @@
+# mode: run
+# tag: oxython, cimport
+
+PYTHON setup.py build_ext --inplace
+PYTHON -c "from pkg.app import test; test()"
+PYTHON -c "from pkg.sub.leaf import test; test()"
+
+######## setup.py ########
+
+from setuptools import setup
+from Cython.Build import cythonize
+
+setup(ext_modules=cythonize('**/*.oxy'))
+
+######## pkg/__init__.py ########
+
+######## pkg/geometry.oxd ########
+
+struct Point:
+    f64 x
+    f64 y
+
+type Coord = f64
+
+fn Point origin()
+fn Coord norm2(Point p)
+
+#[pyclass]
+struct Shape:
+    i32 sides
+
+impl Shape:
+    fn i32 corners(self)
+######## pkg/geometry.oxy ########
+
+fn Point origin():
+    let Point p
+    p.x = 0
+    p.y = 0
+    return p
+
+fn Coord norm2(Point p):
+    return p.x * p.x + p.y * p.y
+
+// the struct is declared in geometry.oxd; this impl implements it
+impl Shape:
+    fn __init__(self, sides):
+        self.sides = sides
+
+    fn i32 corners(self):
+        return self.sides
+######## pkg/app.oxy ########
+
+use libc::math::sqrt
+use libc::stdlib::{malloc, free}
+use libc::string::{memset as fill}
+use libc::limits::*
+use libc::stdio
+use cython
+use pkg::geometry
+use pkg::geometry::{Point, Shape, norm2 as square_length}
+
+fn test():
+    let Point p = geometry.origin()
+    p.x = 3
+    p.y = 4
+    assert sqrt(square_length(p)) == 5.0
+    let geometry.Coord c = geometry.norm2(p)
+    assert c == 25.0
+
+    let char *buffer = <char*>malloc(4)
+    fill(buffer, 0, 4)
+    assert buffer[3] == 0
+    free(buffer)
+
+    assert INT_MAX > 0
+    assert stdio.EOF < 0
+    assert cython.typeof(p) == "Point", cython.typeof(p)
+    assert Shape(4).corners() == 4
+######## pkg/sub/__init__.py ########
+
+######## pkg/sub/leaf.oxy ########
+
+use super::super::geometry::Point
+use super::super::geometry, libc::math::fabs
+use super::sibling::VALUE
+
+fn test():
+    let Point p = geometry.origin()
+    p.x = -2
+    assert fabs(p.x) == 2.0
+    assert VALUE == 7
+######## pkg/sub/sibling.oxd ########
+
+enum:
+    VALUE = 7

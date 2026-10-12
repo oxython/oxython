@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rin Arakaki <rnarkkx@gmail.com>
+Date: Mon, 12 Oct 2026 07:34:45 +0000
+Subject: [PATCH] oxython: add cppclass and fused items
+
+
+diff --git a/Cython/Compiler/Parsing.py b/Cython/Compiler/Parsing.py
+index 94efd9b4a..ed28df115 100644
+--- a/Cython/Compiler/Parsing.py
++++ b/Cython/Compiler/Parsing.py
+@@ -4387,7 +4387,7 @@ def reject_def_in_oxython(s: PyrexScanner):
+ 
+ # words that can start an oxython item
+ _oxython_item_words = cython.declare(frozenset, frozenset((
+-    'fn', 'let', 'static', 'const', 'type', 'struct', 'union', 'enum', 'packed', 'impl')))
++    'fn', 'let', 'static', 'const', 'type', 'struct', 'union', 'enum', 'packed', 'cppclass', 'fused', 'impl')))
+ 
+ _oxython_cdef_levels = cython.declare(tuple, (
+     'module', 'module_pxd', 'function', 'c_class', 'c_class_pxd', 'cpp_class'))
+@@ -4412,7 +4412,7 @@ def looking_at_oxython_item(s: PyrexScanner, ctx) -> cython.bint:
+     if word == 'const' and (ctx.cdef_flag or ctx.level == 'cpp_class' or ctx.visibility == 'extern'):
+         # in 'cdef' blocks, extern blocks and C++ classes 'const' is the C qualifier
+         return next_word == 'fn'
+-    if word in struct_enum_union and ctx.level == 'cpp_class':
++    if (word in struct_enum_union or word == 'cppclass') and ctx.level == 'cpp_class':
+         # nested types in C++ classes keep their existing parser
+         return False
+     if word == 'enum':
+@@ -4457,6 +4457,11 @@ def p_oxython_item(s: PyrexScanner, pos, ctx, decorators):
+         node = p_oxython_const(s, pos, ctx)
+     elif s.looking_at_keyword('type'):
+         node = p_oxython_type_alias(s, pos, ctx)
++    elif s.looking_at_keyword('cppclass'):
++        check_oxython_level(s, ctx, pos, "cppclass")
++        node = p_cpp_class_definition(s, pos, ctx)
++    elif s.looking_at_keyword('fused'):
++        node = p_fused_definition(s, pos, ctx)
+     elif s.looking_at_keyword('struct') and (
+             any(is_pyclass_attribute(d) for d in decorators or ()) or looking_at_extension_struct(s)):
+         # #[pyclass] struct Name(Base): ...     a Python extension type

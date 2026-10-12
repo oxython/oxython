@@ -1,0 +1,18 @@
+// mode: error
+// tag: oxython
+
+def f():
+    pass
+
+async def g():
+    pass
+
+class A:
+    def method(self):
+        pass
+
+_ERRORS = u"""
+4:0: 'def' is not used in oxython files; write 'fn name(...)' instead
+7:6: 'def' is not used in oxython files; write 'fn name(...)' instead
+11:4: 'def' is not used in oxython files; write 'fn name(...)' instead
+"""

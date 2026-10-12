@@ -1,0 +1,122 @@
+// mode: run
+// tag: oxython
+
+use cython
+
+import asyncio
+
+/// 'fn name(...)' without a return type is a Python function.
+///
+/// >>> greet("ox")
+/// 'hello ox!'
+/// >>> greet("ox", "hi", 1, 2, punctuation="?", x=1)
+/// "hi ox? (1, 2) {'x': 1}"
+fn greet(name, greeting="hello", *rest, punctuation="!", **extra):
+    if rest or extra:
+        return f"{greeting} {name}{punctuation} {rest} {extra}"
+    return f"{greeting} {name}{punctuation}"
+
+/// Arguments may carry C types, and a Python return annotation is allowed.
+///
+/// >>> typed(3, 0.5)
+/// 1.5
+fn typed(i32 n, f64 scale=1.0) -> float:
+    return n * scale
+
+fn object c_function_returning_object(x):
+    return [x]
+
+fn i32 c_function(i32 x):
+    return x + 1
+
+/// With a return type, 'fn' is a C function, invisible to Python.
+///
+/// >>> call_c_functions()
+/// ([1], 2)
+/// >>> c_function
+/// Traceback (most recent call last):
+/// NameError: name 'c_function' is not defined
+fn call_c_functions():
+    return c_function_returning_object(1), c_function(1)
+
+/// >>> list(counter(3))
+/// [0, 1, 2]
+fn counter(n):
+    for i in 0..n:
+        yield i
+
+/// >>> make_adder(2)(3)
+/// 5
+fn make_adder(k):
+    fn add(x):
+        return x + k
+    return add
+
+async fn double(x):
+    await asyncio.sleep(0)
+    return 2 * x
+
+/// >>> run_async()
+/// 42
+fn run_async():
+    return asyncio.run(double(21))
+
+fn twice(f):
+    fn wrapper(*args):
+        return 2 * f(*args)
+    return wrapper
+
+/// >>> decorated(5)
+/// 10
+#[twice]
+fn decorated(x):
+    return x
+
+/// >>> attributed(1)
+/// 4
+#[twice]
+#[twice]
+fn attributed(x):
+    return x
+
+/// >>> Greeter("ox").greet()
+/// 'hello ox'
+/// >>> Greeter.make().name
+/// 'default'
+class Greeter:
+    fn __init__(self, name):
+        self.name = name
+
+    fn greet(self):
+        return "hello " + self.name
+
+    #[classmethod]
+    fn make(cls):
+        return cls("default")
+
+/// In extension types, 'fn' without a return type is a Python method and
+/// 'fn' with one is a C method.
+///
+/// >>> c = Counter()
+/// >>> c.bump(); c.bump()
+/// >>> c.value()
+/// 2
+#[pyclass]
+struct Counter:
+    i32 count
+
+impl Counter:
+    fn bump(self):
+        self.count = self.step(self.count)
+
+    fn i32 step(self, i32 x):
+        return x + 1
+
+    fn value(self):
+        return self.count
+
+/// >>> lambdas_unchanged()
+/// 9
+fn lambdas_unchanged():
+    square = lambda x: x * x
+    return square(3)

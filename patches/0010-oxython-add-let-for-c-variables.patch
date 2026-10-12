@@ -1,0 +1,49 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rin Arakaki <rnarkkx@gmail.com>
+Date: Mon, 12 Oct 2026 07:34:40 +0000
+Subject: [PATCH] oxython: add let for C variables
+
+
+diff --git a/Cython/Compiler/Parsing.py b/Cython/Compiler/Parsing.py
+index a29ac95f0..0086ea851 100644
+--- a/Cython/Compiler/Parsing.py
++++ b/Cython/Compiler/Parsing.py
+@@ -4033,7 +4033,7 @@ def p_oxython_statement(s: PyrexScanner, ctx, pos, decorators):
+ 
+ # words that can start an oxython item
+ _oxython_item_words = cython.declare(frozenset, frozenset((
+-    'fn', 'static', 'const')))
++    'fn', 'let', 'static', 'const')))
+ 
+ _oxython_cdef_levels = cython.declare(tuple, (
+     'module', 'module_pxd', 'function', 'c_class', 'c_class_pxd', 'cpp_class'))
+@@ -4066,6 +4066,8 @@ def p_oxython_item(s: PyrexScanner, pos, ctx, decorators):
+     if (s.looking_at_keyword('fn') or
+             s.sy == 'IDENT' and s.systring in ('const', 'static') and s.peek()[1] == 'fn'):
+         node = p_oxython_fn(s, pos, ctx)
++    elif s.looking_at_keyword('let'):
++        node = p_oxython_let(s, pos, ctx)
+     else:
+         s.error("Expected an item")
+ 
+@@ -4131,6 +4133,20 @@ def p_oxython_fn(s: PyrexScanner, pos, ctx):
+     return node
+ 
+ 
++def p_oxython_let(s: PyrexScanner, pos, ctx):
++    # let <type> <declarator> [= <expr>], ...
++    keyword = s.systring
++    s.next()
++    if ctx.level not in _oxython_cdef_levels:
++        error(pos, "%s statement not allowed here; C variables must be declared "
++                   "at the top level of a function, class or module" % keyword)
++    s.level = ctx.level
++    node = p_c_func_or_var_declaration(s, pos, ctx)
++    if isinstance(node, Nodes.CFuncDefNode) or any(declares_function(d) for d in node.declarators):
++        error(pos, "use 'fn' to declare functions")
++    return node
++
++
+ @cython.cfunc
+ def p_decorators(s: PyrexScanner) -> list:
+     decorators = []

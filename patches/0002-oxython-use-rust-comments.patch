@@ -1,0 +1,200 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rin Arakaki <rnarkkx@gmail.com>
+Date: Mon, 12 Oct 2026 07:34:38 +0000
+Subject: [PATCH] oxython: use Rust comments
+
+
+diff --git a/Cython/Build/Dependencies.py b/Cython/Build/Dependencies.py
+index f6e2010c1..9bf211226 100644
+--- a/Cython/Build/Dependencies.py
++++ b/Cython/Build/Dependencies.py
+@@ -187,8 +187,8 @@ class DistutilsInfo:
+             source_lines = StringIO(source) if isinstance(source, str) else source
+             for line in source_lines:
+                 line = line.lstrip()
+-                if not line:
+-                    continue
++                if not line or line.startswith('//'):
++                    continue  # '//' comments in oxython files
+                 if line[0] != '#':
+                     break
+                 line = line[1:].lstrip()
+diff --git a/Cython/Compiler/Lexicon.py b/Cython/Compiler/Lexicon.py
+index f31d90cba..e451c7ac4 100644
+--- a/Cython/Compiler/Lexicon.py
++++ b/Cython/Compiler/Lexicon.py
+@@ -12,7 +12,7 @@ any_string_prefix = raw_prefixes + string_prefixes + char_prefixes
+ IDENT = 'IDENT'
+ 
+ 
+-def make_lexicon(oxython=False):
++def make_lexicon(oxython=False, rust_comments=False):
+     from ..Plex import \
+         Str, Any, AnyBut, Rep, Rep1, Opt, Bol, Eol, Eof, \
+         TEXT, IGNORE, Method, State, Lexicon, Range
+@@ -97,6 +97,14 @@ def make_lexicon(oxython=False):
+     lineterm = Eol + Opt(Str("\n"))
+ 
+     comment = Str("#") + Rep(AnyBut("\n"))
++    if oxython:
++        if rust_comments:
++            # Rust comments: '// ...' and nested '/* ... */'.  '#' only starts
++            # attributes, and there is no '//' operator.
++            comment = Str("//") + Rep(AnyBut("\n"))
++            diphthong = Str("==", "<>", "!=", "<=", ">=", "<<", ">>", "**",
++                            "+=", "-=", "*=", "/=", "%=", "|=", "^=", "&=",
++                            "<<=", ">>=", "**=", "->", "@=", "&&", "||", ":=")
+ 
+     def generate_ft_string_states():
+         out = []
+@@ -154,7 +162,23 @@ def make_lexicon(oxython=False):
+             )
+         return out
+ 
+-    return Lexicon([
++    oxython_rules = []
++    indent_rules = []
++    extra_states = []
++    if oxython:
++        if rust_comments:
++            oxython_rules.append((Str("/*"), Method('begin_block_comment')))
++            # a block comment that starts a line does not change the indentation
++            indent_rules.append((Opt(spaces) + Str("/*"), Method('begin_block_comment')))
++            extra_states.append(State('BLOCK_COMMENT', [
++                (Str("/*"), Method('begin_block_comment')),
++                (Str("*/"), Method('end_block_comment')),
++                (Rep1(AnyBut("/*")), IGNORE),
++                (Any("/*"), IGNORE),
++                (Eof, Method('unclosed_block_comment')),
++            ]))
++
++    return Lexicon(oxython_rules + [
+         (name, Method('normalize_ident')),
+         (intliteral, Method('strip_underscores', symbol='INT')),
+         (fltconst, Method('strip_underscores', symbol='FLOAT')),
+@@ -174,7 +198,7 @@ def make_lexicon(oxython=False):
+         (spaces, IGNORE),
+         (escaped_newline, IGNORE),
+ 
+-        State('INDENT', [
++        State('INDENT', indent_rules + [
+             (comment + lineterm, Method('commentline')),
+             (Opt(spaces) + Opt(comment) + lineterm, IGNORE),
+             (indentation, Method('indentation_action')),
+@@ -217,6 +241,7 @@ def make_lexicon(oxython=False):
+             (Eof, 'EOF')
+         ]),
+         *generate_ft_string_states(),
++        *extra_states,
+ 
+         (Eof, Method('eof_action'))
+         ],
+diff --git a/Cython/Compiler/Scanning.pxd b/Cython/Compiler/Scanning.pxd
+index 916fc1699..761a6f5fa 100644
+--- a/Cython/Compiler/Scanning.pxd
++++ b/Cython/Compiler/Scanning.pxd
+@@ -4,7 +4,7 @@ from ..Plex.Scanners cimport Scanner
+ 
+ cdef str any_string_prefix, IDENT
+ 
+-cdef get_lexicon(bint oxython=*)
++cdef get_lexicon(bint oxython=*, bint rust_comments=*)
+ cdef initial_compile_time_env()
+ 
+ ## methods commented with '##' out are used by Parsing.py when compiled.
+@@ -27,6 +27,9 @@ cdef class PyrexScanner(Scanner):
+     cdef public bint parse_comments
+     cdef public bint in_python_file
+     cdef public bint oxython
++    cdef public bint rust_comments
++    cdef public Py_ssize_t block_comment_depth
++    cdef public str block_comment_return_state
+     cdef public source_encoding
+     cdef dict keywords
+     cdef public list[Py_ssize_t] indentation_stack
+diff --git a/Cython/Compiler/Scanning.py b/Cython/Compiler/Scanning.py
+index 53e68feac..54cadb2ab 100644
+--- a/Cython/Compiler/Scanning.py
++++ b/Cython/Compiler/Scanning.py
+@@ -6,7 +6,7 @@
+ 
+ import cython
+ 
+-cython.declare(make_lexicon=object, lexicon=object, oxython_lexicon=object,
++cython.declare(make_lexicon=object, lexicon=object, oxython_lexicons=dict,
+                print_function=object, error=object, warning=object,
+                os=object, platform=object, Path=object)
+ 
+@@ -30,15 +30,16 @@ scanner_debug_flags = 0
+ scanner_dump_file = None
+ 
+ lexicon = None
+-oxython_lexicon = None
++oxython_lexicons = {}
+ 
+ 
+-def get_lexicon(oxython=False):
+-    global lexicon, oxython_lexicon
++def get_lexicon(oxython=False, rust_comments=False):
++    global lexicon
+     if oxython:
+-        if not oxython_lexicon:
+-            oxython_lexicon = make_lexicon(oxython=True)
+-        return oxython_lexicon
++        key = bool(rust_comments)
++        if key not in oxython_lexicons:
++            oxython_lexicons[key] = make_lexicon(oxython=True, rust_comments=key)
++        return oxython_lexicons[key]
+     if not lexicon:
+         lexicon = make_lexicon()
+     return lexicon
+@@ -346,7 +347,13 @@ class PyrexScanner(Scanner):
+             self.oxython = True
+         else:
+             self.oxython = source_is_oxython(filename)
+-        Scanner.__init__(self, get_lexicon(self.oxython), file, filename, initial_pos)
++        # Rust comments are part of real oxython files.  CYTHON_FORCE_OXYTHON
++        # keeps Cython's '#' comments and '//' operator so that existing code
++        # can be checked against the rest of the oxython syntax.
++        self.rust_comments = self.oxython and not os.environ.get('CYTHON_FORCE_OXYTHON')
++        self.block_comment_depth = 0
++        self.block_comment_return_state = ''
++        Scanner.__init__(self, get_lexicon(self.oxython, self.rust_comments), file, filename, initial_pos)
+ 
+         if filename.is_python_file():
+             self.in_python_file = True
+@@ -403,6 +410,21 @@ class PyrexScanner(Scanner):
+     def strip_underscores(self, text, symbol):
+         self.produce(symbol, text.replace('_', ''))
+ 
++    def begin_block_comment(self, text):
++        # oxython '/* ... */' comments nest, as in Rust
++        if self.block_comment_depth == 0:
++            self.block_comment_return_state = self.state_name
++            self.begin('BLOCK_COMMENT')
++        self.block_comment_depth += 1
++
++    def end_block_comment(self, text):
++        self.block_comment_depth -= 1
++        if self.block_comment_depth == 0:
++            self.begin(self.block_comment_return_state)
++
++    def unclosed_block_comment(self, text):
++        self.error_at_scanpos("Unterminated block comment")
++
+     def current_level(self):
+         return self.indentation_stack[-1]
+ 
+diff --git a/runtests.py b/runtests.py
+index a89ba1db8..f9959f196 100755
+--- a/runtests.py
++++ b/runtests.py
+@@ -541,6 +541,8 @@ def parse_tags(filepath):
+     parse_tag = re.compile(r'#\s*(\w+)\s*:(.*)$').match
+     with open(filepath, encoding='ISO-8859-1', errors='ignore') as f:
+         for line in f:
++            if line.startswith('//'):
++                line = '#' + line[2:]  # oxython tests use '// mode: run'
+             if line[0] != '#':
+                 # ignore BOM-like bytes and whitespace
+                 line = line.lstrip(UTF8_BOM_BYTES).strip()

@@ -1,0 +1,75 @@
+# mode: run
+# tag: oxython, cimport
+
+PYTHON setup.py build_ext --inplace
+PYTHON -c "import shapes; shapes.test()"
+PYTHON -c "import legacy; legacy.test()"
+PYTHON -c "from pkg import inner; inner.test()"
+PYTHON check_dependencies.py
+
+######## setup.py ########
+
+from setuptools import setup
+from Cython.Build import cythonize
+
+setup(ext_modules=cythonize(["*.oxy", "*.pyx", "pkg/*.oxy"]))
+
+######## geometry.oxd ########
+
+struct Point:
+    f64 x
+    f64 y
+
+fn f64 norm2(Point p)
+######## geometry.oxy ########
+
+fn f64 norm2(Point p):
+    return p.x * p.x + p.y * p.y
+######## constants.oxi ########
+
+const i32 SIDES = 4
+######## shapes.oxy ########
+
+use geometry::{Point, norm2}
+
+include "constants.oxi"
+
+fn test():
+    let Point p = Point { x = 3, y = 4 }
+    assert norm2(p) == 25.0
+    assert SIDES == 4
+######## legacy.pyx ########
+
+# A plain Cython module can cimport from an oxython declaration file.
+from geometry cimport Point, norm2
+
+def test():
+    cdef Point p
+    p.x = 1
+    p.y = 1
+    assert norm2(p) == 2.0
+
+######## pkg/__init__.oxy ########
+######## pkg/inner.oxy ########
+
+use super::helpers::twice
+
+fn test():
+    assert twice(21) == 42
+######## pkg/helpers.oxd ########
+
+fn i32 twice(i32 x)
+######## pkg/helpers.oxy ########
+
+fn i32 twice(i32 x):
+    return 2 * x
+######## check_dependencies.py ########
+
+from Cython.Build.Dependencies import create_dependency_tree
+
+tree = create_dependency_tree()
+deps = tree.all_dependencies("shapes.oxy")
+assert any(d.endswith("geometry.oxd") for d in deps), deps
+assert any(d.endswith("constants.oxi") for d in deps), deps
+deps = tree.all_dependencies("pkg/inner.oxy")
+assert any(d.endswith("helpers.oxd") for d in deps), deps

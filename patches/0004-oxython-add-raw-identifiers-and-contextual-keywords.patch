@@ -1,0 +1,90 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rin Arakaki <rnarkkx@gmail.com>
+Date: Mon, 12 Oct 2026 07:34:38 +0000
+Subject: [PATCH] oxython: add raw identifiers and contextual keywords
+
+
+diff --git a/Cython/Compiler/Lexicon.py b/Cython/Compiler/Lexicon.py
+index e5981517a..8dc034417 100644
+--- a/Cython/Compiler/Lexicon.py
++++ b/Cython/Compiler/Lexicon.py
+@@ -45,6 +45,9 @@ def make_lexicon(oxython=False, rust_comments=False):
+ 
+     #name = letter + Rep(letter | digit)
+     name = unicode_start_character + Rep(unicode_continuation_character)
++    if oxython:
++        # raw identifiers: r#type
++        name = Opt(Str("r#")) + name
+     intconst = (prefixed_digits(nonzero_digit, digit) |  # decimal literals with underscores must not start with '0'
+                 (Str("0") + (prefixed_digits(Any("Xx"), hexdigit) |
+                              prefixed_digits(Any("Oo"), octdigit) |
+diff --git a/Cython/Compiler/Scanning.pxd b/Cython/Compiler/Scanning.pxd
+index ed96323d3..155bed0b0 100644
+--- a/Cython/Compiler/Scanning.pxd
++++ b/Cython/Compiler/Scanning.pxd
+@@ -34,6 +34,7 @@ cdef class PyrexScanner(Scanner):
+     cdef public list doc_comments
+     cdef public set blank_lines
+     cdef public object item_doc
++    cdef public bint raw_ident
+     cdef public source_encoding
+     cdef dict keywords
+     cdef public list[Py_ssize_t] indentation_stack
+@@ -51,6 +52,7 @@ cdef class PyrexScanner(Scanner):
+ 
+     cpdef int next(self) except -1
+     cpdef tuple[str, object] peek(self)
++    cpdef bint looking_at_keyword(self, word)
+     cpdef int error_at_scanpos(self, message) except -1
+     cpdef int expect(self, what: str, message=*) except -1
+     cpdef int expect_keyword(self, what: str, message=*) except -1
+diff --git a/Cython/Compiler/Scanning.py b/Cython/Compiler/Scanning.py
+index a09bd194f..38db65f25 100644
+--- a/Cython/Compiler/Scanning.py
++++ b/Cython/Compiler/Scanning.py
+@@ -359,6 +359,7 @@ class PyrexScanner(Scanner):
+         self.item_doc = None
+         Scanner.__init__(self, get_lexicon(self.oxython, self.rust_comments), file, filename, initial_pos)
+ 
++        self.raw_ident = False
+         if filename.is_python_file():
+             self.in_python_file = True
+             keywords = py_reserved_words
+@@ -405,7 +406,10 @@ class PyrexScanner(Scanner):
+     def normalize_ident(self, text):
+         if not text.isascii():
+             text = normalize('NFKC', text)
+-        self.produce(IDENT, text)
++        if self.oxython and text.startswith('r#'):
++            self.produce('RAW_IDENT', text[2:])
++        else:
++            self.produce(IDENT, text)
+ 
+     def commentline(self, text):
+         if self.parse_comments:
+@@ -680,7 +684,13 @@ class PyrexScanner(Scanner):
+         except UnrecognizedInput:
+             self.error_at_scanpos("Unrecognized character")
+             return -1  # just a marker, error() always raises
+-        if sy == IDENT:
++        self.raw_ident = False
++        if sy == 'RAW_IDENT':
++            # oxython raw identifier (r#name): never a keyword
++            sy = IDENT
++            self.raw_ident = True
++            systring = self.context.intern_ustring(systring)
++        elif sy == IDENT:
+             if systring in self.keywords:
+                 if systring == 'print' and print_function in self.context.future_directives:
+                     self.keywords.pop('print', None)
+@@ -701,6 +711,10 @@ class PyrexScanner(Scanner):
+                 t = "%s %s" % (self.sy, self.systring)
+             print("--- %3d %2d %s" % (line, col, t))
+ 
++    def looking_at_keyword(self, word):
++        # oxython contextual keyword: a plain (non-raw) identifier with this spelling
++        return self.oxython and self.sy == IDENT and not self.raw_ident and self.systring == word
++
+     def peek(self):
+         saved = self.sy, self.systring
+         saved_pos = self.position()

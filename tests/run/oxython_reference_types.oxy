@@ -1,0 +1,45 @@
+// mode: run
+// tag: oxython, cpp
+
+use libcpp::vector::vector
+use libcpp::utility::move
+
+fn i32 first(&vector[i32] values):
+    return values[0]
+
+fn void push(&mut vector[i32] values, i32 value):
+    values.push_back(value)
+
+fn usize take(&&vector[i32] values):
+    let vector[i32] owned = values
+    return owned.size()
+
+extern from *:
+    """
+    template <typename T> void swap_values(T &a, T &b) { T t = a; a = b; b = t; }
+    """
+    fn void swap_values[T](&mut T a, &mut T b)
+
+/// '&T' is a const reference and '&mut T' a mutable one.
+///
+/// >>> test_references()
+/// (1, [1, 2, 3])
+fn test_references():
+    let vector[i32] v
+    push(v, 1)
+    push(v, 2)
+    push(v, 3)
+    return first(v), v
+
+/// >>> test_rvalue_reference()
+/// 2
+fn test_rvalue_reference():
+    let vector[i32] v = [1, 2]
+    return take(move(v))
+
+/// >>> test_template_references()
+/// (2, 1)
+fn test_template_references():
+    let i32 a = 1, b = 2
+    swap_values(a, b)
+    return a, b

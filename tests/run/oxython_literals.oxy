@@ -1,0 +1,43 @@
+// mode: run
+// tag: oxython
+
+/// >>> booleans()
+/// (True, False, True, False)
+fn booleans():
+    let bint a = true
+    return a, false, true is True, false is True
+
+/// Suffixes give the literal a C type.
+///
+/// >>> typed_ints()
+/// (255, 0, 1000000, 9223372036854775807, 18446744073709551615)
+fn typed_ints():
+    let u8 small = 255u8
+    small += 1u8
+    return 255u8, small, 1_000_000i32, 9223372036854775807i64, 18446744073709551615u64
+
+/// >>> suffix_types()
+/// (1, 2, 4, 8, 8)
+fn suffix_types():
+    return sizeof(1u8), sizeof(1i16), sizeof(1u32), sizeof(1i64), sizeof(1usize)
+
+/// >>> typed_floats()
+/// (2.5, 1.0, 4, 8, 0.1)
+fn typed_floats():
+    return 2.5f32, 1f64, sizeof(2.5f32), sizeof(1f64), 1e-1f64
+
+/// >>> plain_literals_unchanged()
+/// (1.0, 0.5, 3.0, 255, 10)
+fn plain_literals_unchanged():
+    return 1., .5, 3e0, 0xff, 10
+
+/// >>> names_with_raw_identifiers()
+/// 1
+fn names_with_raw_identifiers(r#true=1):
+    return r#true
+
+/// >>> compile_time()
+/// 16
+fn compile_time():
+    const SIZE = 16u32
+    return SIZE

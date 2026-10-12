@@ -1,0 +1,19 @@
+// mode: error
+// tag: oxython
+
+struct Point:
+    f64 x
+
+impl Point:
+    fn norm(self):
+        pass
+
+#[pyclass]
+struct Shape:
+    i32 sides
+    fn i32 corners(self)
+
+_ERRORS = u"""
+7:0: 'impl Point' needs a '#[pyclass] struct Point'
+14:4: Methods belong in an 'impl' block
+"""

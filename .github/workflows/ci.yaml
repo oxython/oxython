@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 3 * * *"   # nightly check against upstream master
+  workflow_dispatch:
+
+jobs:
+  oxython-tests:
+    name: oxython tests (${{ matrix.upstream }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        upstream: [pinned, master]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install setuptools
+      - name: Apply patches
+        run: |
+          if [ "${{ matrix.upstream }}" = master ]; then
+            UPSTREAM_REF=master scripts/apply.sh
+          else
+            scripts/apply.sh
+          fi
+      - name: Run oxython tests
+        run: JOBS=4 scripts/test.sh
+
+  compatibility:
+    name: upstream tests in forced oxython mode
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install setuptools
+      - run: scripts/apply.sh
+      - name: Run upstream compile, error and run tests with oxython forced on
+        working-directory: upstream
+        env:
+          CYTHON_FORCE_OXYTHON: "1"
+        # literal_lists calls a function named 'false', which is a literal in oxython.
+        # oxython's own error tests expect errors that the force switch turns off.
+        run: python runtests.py --no-pyregr --no-cpp-locals -j4 -x literal_lists -x oxython_ compile errors run memoryview

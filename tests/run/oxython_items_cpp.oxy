@@ -1,0 +1,46 @@
+// mode: run
+// tag: oxython, cpp
+
+extern from *:
+    """
+    struct Counter {
+        int n;
+        Counter() : n(0) {}
+        int get() const { return n; }
+        void inc() { ++n; }
+        static int zero() { return 0; }
+        enum { STEP = 1 };
+    };
+    """
+    cppclass Counter:
+        const i32 *unused_pointer
+        Counter()
+        const fn i32 get()
+        fn void inc()
+        static fn i32 zero()
+
+/// >>> test_counter()
+/// (2, 0)
+fn test_counter():
+    let Counter c
+    c.inc()
+    c.inc()
+    let const Counter *view = &c
+    return view.get(), Counter.zero()
+
+cppclass Accumulator:
+    i32 total
+    Accumulator():
+        this.total = 0
+    fn void add(i32 x):
+        this.total += x
+
+/// 'cppclass' defines a C++ class without 'cdef'.
+///
+/// >>> test_top_level_cppclass()
+/// 5
+fn test_top_level_cppclass():
+    let Accumulator acc
+    acc.add(2)
+    acc.add(3)
+    return acc.total

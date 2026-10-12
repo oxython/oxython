@@ -1,0 +1,14 @@
+// mode: run
+// tag: oxython
+
+use libc::{stdlib::{malloc, free}, math::sqrt as root, stdio::{self, printf}}
+use libc::limits::*
+
+/// 'use' groups names with braces, nested as in Rust; 'self' names the module.
+///
+/// >>> use_trees()
+/// (2.0, True, True)
+fn use_trees():
+    let r&mut u8 p = <r&mut u8>malloc(1)
+    free(p)
+    return root(4.0), INT_MAX > 0, stdio.EOF < 0

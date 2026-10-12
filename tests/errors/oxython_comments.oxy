@@ -1,0 +1,9 @@
+// mode: error
+// tag: oxython
+
+x = 1  # a Python comment
+/* never closed
+
+_ERRORS = u"""
+4:7: Unrecognized character
+"""

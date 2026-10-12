@@ -1,0 +1,131 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rin Arakaki <rnarkkx@gmail.com>
+Date: Mon, 12 Oct 2026 07:34:40 +0000
+Subject: [PATCH] oxython: add fn items for C functions
+
+
+diff --git a/Cython/Compiler/Parsing.py b/Cython/Compiler/Parsing.py
+index b0f26d0f6..a29ac95f0 100644
+--- a/Cython/Compiler/Parsing.py
++++ b/Cython/Compiler/Parsing.py
+@@ -2626,6 +2626,8 @@ def p_statement(s: PyrexScanner, ctx, first_statement: cython.bint = False):
+         if s.sy == '@':
+             # '@' decorators may follow oxython '#[...]' attributes
+             decorators = (decorators or []) + p_decorators(s)
++        if s.oxython and looking_at_oxython_item(s, ctx):
++            return p_oxython_statement(s, ctx, pos, decorators)
+         if not ctx.allow_struct_enum_decorator and s.sy not in ('def', 'cdef', 'cpdef', 'class', 'async'):
+             if s.sy == 'IDENT' and s.systring == 'async':
+                 pass  # handled below
+@@ -4024,9 +4026,111 @@ def p_oxython_attributes(s: PyrexScanner) -> list:
+ def p_oxython_statement(s: PyrexScanner, ctx, pos, decorators):
+     # Parse a statement that only exists in oxython files.
+     # Returns None, consuming nothing, if the statement is not one of them.
++    if looking_at_oxython_item(s, ctx):
++        return p_oxython_item(s, pos, ctx, decorators)
+     return None
+ 
+ 
++# words that can start an oxython item
++_oxython_item_words = cython.declare(frozenset, frozenset((
++    'fn', 'static', 'const')))
++
++_oxython_cdef_levels = cython.declare(tuple, (
++    'module', 'module_pxd', 'function', 'c_class', 'c_class_pxd', 'cpp_class'))
++
++
++@cython.cfunc
++def looking_at_oxython_item(s: PyrexScanner, ctx) -> cython.bint:
++    if not s.oxython:
++        return False
++    if s.sy == 'cpdef':
++        return s.peek()[1] == 'fn'
++    if s.sy != 'IDENT' or s.raw_ident:
++        return False
++    word = s.systring
++    if word not in _oxython_item_words:
++        return False
++    next_sy, next_word = s.peek()
++    if word in ('const', 'static'):
++        return next_word == 'fn'
++    return next_sy == 'IDENT'
++
++
++def p_oxython_item(s: PyrexScanner, pos, ctx, decorators):
++    overridable = False
++    if s.sy == 'cpdef':
++        s.next()
++        overridable = True
++    ctx = ctx(overridable=overridable)
++
++    if (s.looking_at_keyword('fn') or
++            s.sy == 'IDENT' and s.systring in ('const', 'static') and s.peek()[1] == 'fn'):
++        node = p_oxython_fn(s, pos, ctx)
++    else:
++        s.error("Expected an item")
++
++    if decorators:
++        allowed = (Nodes.CFuncDefNode, Nodes.CVarDefNode, Nodes.CClassDefNode)
++        if ctx.allow_struct_enum_decorator:
++            allowed += (Nodes.CStructOrUnionDefNode, Nodes.CEnumDefNode)
++        if not isinstance(node, allowed):
++            error(pos, "Decorators can only be followed by functions or classes")
++        node.decorators = (node.decorators or []) + decorators
++    return node
++
++
++@cython.cfunc
++def check_oxython_level(s: PyrexScanner, ctx, pos, what):
++    if ctx.level not in _oxython_cdef_levels:
++        s.error("%s not allowed here" % what)
++    s.level = ctx.level
++
++
++@cython.cfunc
++def declares_function(declarator) -> cython.bint:
++    # True if the declarator nearest to the name is a function declarator,
++    # as in 'f(x)' or '*f(x)', but not for a function pointer '(*f)(x)'.
++    # Template parameters ('f[T](x)') parse as array declarators and are skipped.
++    inner = None
++    while not isinstance(declarator, Nodes.CNameDeclaratorNode):
++        if not isinstance(declarator, Nodes.CArrayDeclaratorNode):
++            inner = declarator
++        declarator = declarator.base
++    return isinstance(inner, Nodes.CFuncDeclaratorNode)
++
++
++def p_oxython_fn(s: PyrexScanner, pos, ctx):
++    # [const | static] fn [inline] <return type> <name>(<args>) [...] [:<body>]
++    is_const_method = is_static_method = False
++    if s.systring == 'const':
++        s.next()
++        is_const_method = True
++    elif s.systring == 'static':
++        s.next()
++        is_static_method = True
++    s.next()  # 'fn'
++    check_oxython_level(s, ctx, pos, "fn item")
++    if is_const_method and ctx.level != 'cpp_class':
++        error(pos, "'const fn' is only allowed in C++ classes")
++    node = p_c_func_or_var_declaration(s, pos, ctx)
++    if isinstance(node, Nodes.CFuncDefNode):
++        declarators = [node.declarator]
++        if is_const_method:
++            node.is_const_method = True
++    else:
++        declarators = node.declarators
++        if is_const_method:
++            declarators[0].is_const_method = True
++    for declarator in declarators:
++        if not declares_function(declarator):
++            error(declarator.pos, "'fn' must declare a function; use 'let' for variables")
++    if is_static_method:
++        staticmethod = Nodes.DecoratorNode(
++            pos, decorator=ExprNodes.NameNode(pos, name=EncodedString('staticmethod')))
++        node.decorators = (node.decorators or []) + [staticmethod]
++    return node
++
++
+ @cython.cfunc
+ def p_decorators(s: PyrexScanner) -> list:
+     decorators = []

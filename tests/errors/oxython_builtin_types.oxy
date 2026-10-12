@@ -1,0 +1,14 @@
+// mode: error
+// tag: oxython
+
+let i128 big
+let u128 ubig
+let f128 quad
+let c256 quad_complex
+
+_ERRORS = u"""
+4:4: 'i128' has no portable C equivalent and is not supported
+5:4: 'u128' has no portable C equivalent and is not supported
+6:4: 'f128' (IEEE binary128) has no portable C equivalent; use c_longdouble for C's long double
+7:4: 'c256' has no portable C equivalent and is not supported
+"""

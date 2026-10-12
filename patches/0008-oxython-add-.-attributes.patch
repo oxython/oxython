@@ -1,0 +1,105 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rin Arakaki <rnarkkx@gmail.com>
+Date: Mon, 12 Oct 2026 07:34:39 +0000
+Subject: [PATCH] oxython: add #[...] attributes
+
+
+diff --git a/Cython/Compiler/Lexicon.py b/Cython/Compiler/Lexicon.py
+index 5e13a22c1..87eb30e9a 100644
+--- a/Cython/Compiler/Lexicon.py
++++ b/Cython/Compiler/Lexicon.py
+@@ -114,6 +114,9 @@ def make_lexicon(oxython=False, rust_comments=False):
+             diphthong = Str("==", "<>", "!=", "<=", ">=", "<<", ">>", "**",
+                             "+=", "-=", "*=", "/=", "%=", "|=", "^=", "&=",
+                             "<<=", ">>=", "**=", "->", "@=", "&&", "||", ":=")
++        else:
++            # '#[' starts an attribute, not a comment
++            comment = Str("#") + Opt(AnyBut("[\n") + Rep(AnyBut("\n")))
+ 
+     def generate_ft_string_states():
+         out = []
+@@ -194,6 +197,7 @@ def make_lexicon(oxython=False, rust_comments=False):
+             indent_rules.append((Opt(spaces) + Str("/**"), Method('begin_doc_block_comment')))
+             # blank and comment lines may separate a doc comment from its item
+             indent_rules.append((Opt(spaces) + Opt(comment) + lineterm, Method('blank_line')))
++        oxython_rules.append((Str("#["), Method('open_bracket_action')))
+ 
+     return Lexicon(oxython_rules + [
+         (name, Method('normalize_ident')),
+diff --git a/Cython/Compiler/Parsing.py b/Cython/Compiler/Parsing.py
+index 6672501fe..b0f26d0f6 100644
+--- a/Cython/Compiler/Parsing.py
++++ b/Cython/Compiler/Parsing.py
+@@ -2589,6 +2589,14 @@ def p_statement(s: PyrexScanner, ctx, first_statement: cython.bint = False):
+     cdef_flag: cython.bint = ctx.cdef_flag
+     pos = s.position()
+     decorators = None
++    if s.oxython:
++        if s.sy == '#[':
++            if ctx.level not in ('module', 'class', 'c_class', 'function', 'property', 'module_pxd', 'c_class_pxd', 'other'):
++                s.error('attribute not allowed here')
++            decorators = p_oxython_attributes(s)
++        node = p_oxython_statement(s, ctx, pos, decorators)
++        if node is not None:
++            return node
+     if s.sy == 'ctypedef':
+         if ctx.level not in ('module', 'module_pxd'):
+             s.error("ctypedef statement not allowed here")
+@@ -2611,11 +2619,13 @@ def p_statement(s: PyrexScanner, ctx, first_statement: cython.bint = False):
+                     "Consider using runtime conditions or C macros instead. "
+                     "See https://github.com/cython/cython/issues/4310", level=1)
+         return p_IF_statement(s, ctx)
+-    elif s.sy == '@':
++    elif s.sy == '@' or decorators is not None:
+         if ctx.level not in ('module', 'class', 'c_class', 'function', 'property', 'module_pxd', 'c_class_pxd', 'other'):
+             s.error('decorator not allowed here')
+         s.level = ctx.level
+-        decorators = p_decorators(s)
++        if s.sy == '@':
++            # '@' decorators may follow oxython '#[...]' attributes
++            decorators = (decorators or []) + p_decorators(s)
+         if not ctx.allow_struct_enum_decorator and s.sy not in ('def', 'cdef', 'cpdef', 'class', 'async'):
+             if s.sy == 'IDENT' and s.systring == 'async':
+                 pass  # handled below
+@@ -3998,6 +4008,25 @@ def p_ctypedef_statement(s: PyrexScanner, ctx):
+             in_pxd = ctx.level == 'module_pxd')
+ 
+ 
++def p_oxython_attributes(s: PyrexScanner) -> list:
++    # oxython: '#[expr]' on its own line is a decorator
++    attributes = []
++    while s.sy == '#[':
++        pos = s.position()
++        s.next()
++        attribute = p_namedexpr_test(s)
++        s.expect(']')
++        s.expect_newline("Expected a newline after attribute")
++        attributes.append(Nodes.DecoratorNode(pos, decorator=attribute))
++    return attributes
++
++
++def p_oxython_statement(s: PyrexScanner, ctx, pos, decorators):
++    # Parse a statement that only exists in oxython files.
++    # Returns None, consuming nothing, if the statement is not one of them.
++    return None
++
++
+ @cython.cfunc
+ def p_decorators(s: PyrexScanner) -> list:
+     decorators = []
+@@ -4460,8 +4489,14 @@ def p_cpp_class_definition(s: PyrexScanner, pos,  ctx):
+ def p_cpp_class_attribute(s: PyrexScanner, ctx):
+     pos = s.position()
+     decorators = None
++    if s.oxython:
++        if s.sy == '#[':
++            decorators = p_oxython_attributes(s)
++        node = p_oxython_statement(s, ctx, pos, decorators)
++        if node is not None:
++            return node
+     if s.sy == '@':
+-        decorators = p_decorators(s)
++        decorators = (decorators or []) + p_decorators(s)
+     if s.systring == 'cppclass':
+         return p_cpp_class_definition(s, pos, ctx)
+     elif s.systring == 'ctypedef':

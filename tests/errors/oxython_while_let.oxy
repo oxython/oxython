@@ -1,0 +1,12 @@
+// mode: error
+// tag: oxython
+
+fn f(items):
+    while let [a] = items:
+        pass
+    else:
+        pass
+
+_ERRORS = u"""
+7:4: 'while let' cannot have an else clause
+"""

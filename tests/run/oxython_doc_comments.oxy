@@ -1,0 +1,49 @@
+//! Module documentation
+//! spans '//!' lines.
+// mode: run
+// tag: oxython
+
+/// Doc comments become docstrings, so doctests work:
+///
+/// >>> add(1, 2)
+/// 3
+fn add(a, b):
+    return a + b
+
+/**
+ * Block doc comments too.
+ *
+ * >>> block()
+ * 'block'
+ */
+fn block():
+    return "block"
+
+/// Documented extension type.
+#[pyclass]
+struct Point:
+    /// The x coordinate.
+    pub i32 x
+
+/// Documented methods.
+impl Point:
+    /// >>> Point().double()
+    /// 0
+    fn double(self):
+        return 2 * self.x
+
+/// A blank line or a plain comment may follow a doc comment.
+
+// note
+fn spaced():
+    pass
+
+fn docs():
+    /// >>> docs()
+    /// ('Module documentation\nspans '//!' lines.', 'Documented extension type.', 'A blank line or a plain comment may follow a doc comment.', None)
+    import sys
+    module = sys.modules[__name__]
+    return module.__doc__, Point.__doc__, spaced.__doc__, undocumented.__doc__
+
+fn undocumented():
+    pass

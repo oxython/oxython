@@ -1,0 +1,112 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rin Arakaki <rnarkkx@gmail.com>
+Date: Mon, 12 Oct 2026 07:34:39 +0000
+Subject: [PATCH] oxython: add builtin types i8..u64, isize, usize, f32, f64,
+ c64, c128, u2 and C types
+
+
+diff --git a/Cython/Compiler/Parsing.py b/Cython/Compiler/Parsing.py
+index 0fe9e6aff..be48aef01 100644
+--- a/Cython/Compiler/Parsing.py
++++ b/Cython/Compiler/Parsing.py
+@@ -2863,6 +2863,8 @@ def p_c_simple_base_type(s: PyrexScanner, nonempty: cython.bint, templates=None)
+ 
+     if s.sy != 'IDENT':
+         error(pos, "Expected an identifier, found '%s'" % s.sy)
++    if looking_at_oxython_type(s):
++        return p_oxython_type(s, nonempty)
+     if looking_at_base_type(s):
+         #print "p_c_simple_base_type: looking_at_base_type at", s.position()
+         is_basic = True
+@@ -3004,7 +3006,7 @@ def looking_at_name(s: PyrexScanner) -> cython.bint:
+ 
+ @cython.cfunc
+ def looking_at_expr(s: PyrexScanner) -> cython.bint:
+-    if s.systring in base_type_start_words:
++    if s.systring in base_type_start_words or looking_at_oxython_type(s):
+         return False
+     elif s.sy == 'IDENT':
+         is_type = False
+@@ -3048,7 +3050,81 @@ def looking_at_expr(s: PyrexScanner) -> cython.bint:
+ @cython.cfunc
+ def looking_at_base_type(s: PyrexScanner) -> cython.bint:
+     #print "looking_at_base_type?", s.sy, s.systring, s.position()
+-    return s.sy == 'IDENT' and s.systring in base_type_start_words
++    return (s.sy == 'IDENT' and s.systring in base_type_start_words) or looking_at_oxython_type(s)
++
++
++# oxython builtin types: name -> (signed, longness, C base name, complex)
++# The integer types have the exact width their name promises on every
++# platform CPython supports (int is 32 bit, long long is 64 bit).
++oxython_c_types = cython.declare(dict, {
++    "i8":    (2, 0, "char", False),     # signed char
++    "i16":   (1, -1, "int", False),     # short
++    "i32":   (1, 0, "int", False),      # int
++    "i64":   (1, 2, "int", False),      # long long
++    "u8":    (0, 0, "char", False),     # unsigned char
++    "u16":   (0, -1, "int", False),     # unsigned short
++    "u32":   (0, 0, "int", False),      # unsigned int
++    "u64":   (0, 2, "int", False),      # unsigned long long
++    "isize": (2, 0, "Py_ssize_t", False),
++    "usize": (0, 0, "size_t", False),
++    "f32":   (1, 0, "float", False),
++    "f64":   (1, 0, "double", False),
++    "c64":   (1, 0, "float", True),     # float complex
++    "c128":  (1, 0, "double", True),    # double complex
++    "u2":    (1, 0, "bint", False),     # boolean
++    # C types with platform dependent widths, for talking to C (as Rust's core::ffi)
++    "c_char":       (1, 0, "char", False),     # plain char, signedness depends on the platform
++    "c_schar":      (2, 0, "char", False),
++    "c_uchar":      (0, 0, "char", False),
++    "c_short":      (1, -1, "int", False),
++    "c_ushort":     (0, -1, "int", False),
++    "c_int":        (1, 0, "int", False),
++    "c_uint":       (0, 0, "int", False),
++    "c_long":       (1, 1, "int", False),
++    "c_ulong":      (0, 1, "int", False),
++    "c_longlong":   (1, 2, "int", False),
++    "c_ulonglong":  (0, 2, "int", False),
++    "c_float":      (1, 0, "float", False),
++    "c_double":     (1, 0, "double", False),
++    "c_longdouble": (1, 1, "double", False),
++    # no portable C equivalent
++    "i128":  "'i128' has no portable C equivalent and is not supported",
++    "u128":  "'u128' has no portable C equivalent and is not supported",
++    "f128":  "'f128' (IEEE binary128) has no portable C equivalent; use c_longdouble for C's long double",
++    "c256":  "'c256' has no portable C equivalent and is not supported",
++})
++
++
++@cython.cfunc
++def looking_at_oxython_type(s: PyrexScanner) -> cython.bint:
++    return s.oxython and s.sy == 'IDENT' and not s.raw_ident and s.systring in oxython_c_types
++
++
++def p_oxython_type(s: PyrexScanner, nonempty, templates=None):
++    # s.systring in oxython_c_types
++    pos = s.position()
++    name = s.systring
++    s.next()
++    spec = oxython_c_types[name]
++    if isinstance(spec, str):
++        error(pos, spec)
++        spec = oxython_c_types[{"i128": "i64", "u128": "u64", "f128": "f64", "c256": "c128"}[name]]
++    type_node = make_oxython_type_node(pos, name, spec)
++    if s.sy == '[':
++        if is_memoryviewslice_access(s):
++            type_node = p_memoryviewslice_access(s, type_node)
++        else:
++            type_node = p_buffer_or_template(s, type_node, templates)
++    return type_node
++
++
++def make_oxython_type_node(pos, name, spec=None):
++    if spec is None:
++        spec = oxython_c_types[name]
++    signed, longness, c_name, is_complex = spec
++    return Nodes.CSimpleBaseTypeNode(
++        pos, name=c_name, module_path=[], is_basic_c_type=True,
++        signed=signed, longness=longness, complex=is_complex, templates=None)
+ 
+ 
+ @cython.cfunc

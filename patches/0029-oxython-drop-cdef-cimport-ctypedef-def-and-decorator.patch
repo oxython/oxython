@@ -1,0 +1,104 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rin Arakaki <rnarkkx@gmail.com>
+Date: Mon, 12 Oct 2026 07:34:45 +0000
+Subject: [PATCH] oxython: drop cdef, cimport, ctypedef, DEF and @ decorators
+
+
+diff --git a/Cython/Compiler/Parsing.py b/Cython/Compiler/Parsing.py
+index ed28df115..7f927e3f2 100644
+--- a/Cython/Compiler/Parsing.py
++++ b/Cython/Compiler/Parsing.py
+@@ -2037,6 +2037,8 @@ def p_import_statement(s: PyrexScanner):
+     # s.sy in ('import', 'cimport')
+     pos = s.position()
+     kind = s.sy
++    if kind == 'cimport':
++        reject_cython_word_in_oxython(s, 'cimport')
+     s.next()
+     items = [p_dotted_name(s, as_allowed=True)]
+     while s.sy == ',':
+@@ -2088,6 +2090,8 @@ def p_from_import_statement(s: PyrexScanner, first_statement: cython.bint = 0):
+     if s.sy not in ('import', 'cimport'):
+         s.error("Expected 'import' or 'cimport'")
+     kind = s.sy
++    if kind == 'cimport':
++        reject_cython_word_in_oxython(s, 'cimport', pos)
+     s.next()
+ 
+     is_cimport = kind == 'cimport'
+@@ -2789,12 +2793,14 @@ def p_statement(s: PyrexScanner, ctx, first_statement: cython.bint = False):
+         if node is not None:
+             return node
+     if s.sy == 'ctypedef':
++        reject_cython_word_in_oxython(s, 'ctypedef')
+         if ctx.level not in ('module', 'module_pxd'):
+             s.error("ctypedef statement not allowed here")
+         #if ctx.api:
+         #    error(pos, "'api' not allowed with 'ctypedef'")
+         return p_ctypedef_statement(s, ctx)
+     elif s.sy == 'DEF':
++        reject_cython_word_in_oxython(s, 'DEF')
+         # We used to dep-warn about this but removed the warning again since
+         # we don't have a good answer yet for all use cases.
+         if s.context.compiler_directives.get("warn.deprecated.DEF", False):
+@@ -2815,6 +2821,7 @@ def p_statement(s: PyrexScanner, ctx, first_statement: cython.bint = False):
+             s.error('decorator not allowed here')
+         s.level = ctx.level
+         if s.sy == '@':
++            reject_cython_word_in_oxython(s, '@')
+             # '@' decorators may follow oxython '#[...]' attributes
+             decorators = (decorators or []) + p_decorators(s)
+         if s.oxython and (looking_at_oxython_fn_def(s, ctx) or looking_at_oxython_item(s, ctx)):
+@@ -2830,6 +2837,7 @@ def p_statement(s: PyrexScanner, ctx, first_statement: cython.bint = False):
+ 
+     overridable = False
+     if s.sy == 'cdef':
++        reject_cython_word_in_oxython(s, 'cdef')
+         cdef_flag = True
+         s.next()
+     elif s.sy == 'cpdef':
+@@ -4377,12 +4385,27 @@ def p_oxython_fn_def(s: PyrexScanner, ctx, decorators, is_async_def=False):
+     return p_def_statement(s, decorators, is_async_def=is_async_def)
+ 
+ 
++_oxython_replacements = cython.declare(dict, {
++    'def': "write 'fn name(...)' instead",
++    'cdef': "declare with fn, let, static, struct, union, enum, impl, cppclass, fused or extern instead",
++    'ctypedef': "write 'type Name = ...' instead",
++    'DEF': "write 'const NAME = ...' instead",
++    'cimport': "write 'use module::name' instead",
++    '@': "write '#[...]' attributes instead",
++})
++
++
+ @cython.cfunc
+-def reject_def_in_oxython(s: PyrexScanner):
+-    # CYTHON_FORCE_OXYTHON checks that existing Cython code still parses,
+-    # so it keeps accepting 'def'.
++def reject_cython_word_in_oxython(s: PyrexScanner, word, pos=None):
++    # Cython-only words have oxython replacements.  CYTHON_FORCE_OXYTHON
++    # checks that existing Cython code still parses, so it keeps them.
+     if s.oxython and not os.environ.get('CYTHON_FORCE_OXYTHON'):
+-        error(s.position(), "'def' is not used in oxython files; write 'fn name(...)' instead")
++        error(pos or s.position(), "'%s' is not used in oxython files; %s" % (word, _oxython_replacements[word]))
++
++
++@cython.cfunc
++def reject_def_in_oxython(s: PyrexScanner):
++    reject_cython_word_in_oxython(s, 'def')
+ 
+ 
+ # words that can start an oxython item
+@@ -5298,10 +5321,12 @@ def p_cpp_class_attribute(s: PyrexScanner, ctx):
+         if node is not None:
+             return node
+     if s.sy == '@':
++        reject_cython_word_in_oxython(s, '@')
+         decorators = (decorators or []) + p_decorators(s)
+     if s.systring == 'cppclass':
+         return p_cpp_class_definition(s, pos, ctx)
+     elif s.systring == 'ctypedef':
++        reject_cython_word_in_oxython(s, 'ctypedef')
+         return p_ctypedef_statement(s, ctx)
+     elif s.sy == 'IDENT' and s.systring in struct_enum_union:
+         if s.systring != 'enum':

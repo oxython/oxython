@@ -1,0 +1,62 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rin Arakaki <rnarkkx@gmail.com>
+Date: Mon, 12 Oct 2026 07:34:42 +0000
+Subject: [PATCH] oxython: add reference and raw pointer types
+
+
+diff --git a/Cython/Compiler/Parsing.py b/Cython/Compiler/Parsing.py
+index b6828a0d0..362fae489 100644
+--- a/Cython/Compiler/Parsing.py
++++ b/Cython/Compiler/Parsing.py
+@@ -401,6 +401,7 @@ def p_typecast(s: PyrexScanner):
+     base_type = p_c_base_type(s)
+     is_memslice = isinstance(base_type, Nodes.MemoryViewSliceTypeNode)
+     is_other_unnamed_type = isinstance(base_type, (
++        Nodes.CComplexBaseTypeNode,
+         Nodes.TemplatedTypeNode,
+         Nodes.CQualifierTypeNode,
+         Nodes.CTupleBaseTypeNode,
+@@ -2883,12 +2884,43 @@ def p_positional_and_keyword_args(s: PyrexScanner, end_sy_set, templates = None)
+ 
+ @cython.ccall
+ def p_c_base_type(s: PyrexScanner, nonempty: cython.bint = False, templates=None):
++    if s.oxython and (s.sy in ('&', '&&') or s.looking_at_keyword('r') and s.peek()[0] == '&'):
++        return p_oxython_reference_type(s, nonempty, templates)
+     if s.sy == '(':
+         return p_c_complex_base_type(s, templates = templates)
+     else:
+         return p_c_simple_base_type(s, nonempty=nonempty, templates=templates)
+ 
+ 
++def p_oxython_reference_type(s: PyrexScanner, nonempty, templates):
++    #   &T       const T&       (C++ reference)
++    #   &mut T   T&
++    #   r&T      const T*       (raw pointer)
++    #   r&mut T  T*
++    #   &&T      T&&            (C++ rvalue reference)
++    pos = s.position()
++    if s.sy == '&&':
++        s.next()
++        target = p_c_base_type(s, nonempty=nonempty, templates=templates)
++        declarator_class = Nodes.CppRvalueReferenceDeclaratorNode
++    else:
++        raw = s.looking_at_keyword('r')
++        if raw:
++            s.next()
++        s.expect('&')
++        mutable = s.looking_at_keyword('mut')
++        if mutable:
++            s.next()
++        target = p_c_base_type(s, nonempty=nonempty, templates=templates)
++        if not mutable:
++            target = Nodes.CQualifierTypeNode(
++                pos, base_type=target, is_const=True, is_volatile=False, is_restrict=False)
++        declarator_class = Nodes.CPtrDeclaratorNode if raw else Nodes.CReferenceDeclaratorNode
++    declarator = declarator_class(
++        pos, base=Nodes.CNameDeclaratorNode(pos, name=EncodedString(''), cname=None, default=None))
++    return Nodes.CComplexBaseTypeNode(pos, base_type=target, declarator=declarator)
++
++
+ @cython.cfunc
+ def p_calling_convention(s: PyrexScanner):
+     if s.sy == 'IDENT' and s.systring in calling_convention_words:

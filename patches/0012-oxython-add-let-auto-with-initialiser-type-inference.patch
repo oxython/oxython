@@ -1,0 +1,208 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rin Arakaki <rnarkkx@gmail.com>
+Date: Mon, 12 Oct 2026 07:34:40 +0000
+Subject: [PATCH] oxython: add let auto with initialiser type inference
+
+
+diff --git a/Cython/Compiler/ExprNodes.py b/Cython/Compiler/ExprNodes.py
+index 71b6c474a..b5f65be68 100644
+--- a/Cython/Compiler/ExprNodes.py
++++ b/Cython/Compiler/ExprNodes.py
+@@ -2146,6 +2146,7 @@ class NameNode(AtomicExprNode):
+     #  allow_null      boolean   Don't raise UnboundLocalError
+     #  nogil           boolean   Whether it is used in a nogil context
+ 
++    is_auto_initializer = False  # target of an oxython 'let auto' initialiser
+     is_name = True
+     is_cython_module = False
+     cython_attribute = None
+diff --git a/Cython/Compiler/Nodes.py b/Cython/Compiler/Nodes.py
+index 11c48d0c4..eec818db9 100644
+--- a/Cython/Compiler/Nodes.py
++++ b/Cython/Compiler/Nodes.py
+@@ -1528,6 +1528,32 @@ class CQualifierTypeNode(CBaseTypeNode):
+         return PyrexTypes.c_qualifier_type(base, self.is_const, self.is_volatile)
+ 
+ 
++class AutoVarDeclNode(StatNode):
++    # oxython 'let auto x = ...': declares local variables whose C type
++    # is inferred from their assignments, independent of 'infer_types'.
++    #
++    # names    [(pos, string)]
++
++    child_attrs = []
++
++    def analyse_declarations(self, env):
++        if not env.is_local_scope:
++            error(self.pos, "'let auto' is only allowed inside functions")
++            return
++        for pos, name in self.names:
++            if env.lookup_here(name) is not None:
++                error(pos, "'%s' redeclared" % name)
++                continue
++            entry = env.declare_var(name, PyrexTypes.unspecified_type, pos)
++            entry.is_auto_typed = True
++
++    def analyse_expressions(self, env):
++        return self
++
++    def generate_execution_code(self, code):
++        pass
++
++
+ class CVarDefNode(StatNode):
+     #  C variable definition or forward/extern function declaration.
+     #
+diff --git a/Cython/Compiler/Parsing.py b/Cython/Compiler/Parsing.py
+index bb524564a..bfc0e984f 100644
+--- a/Cython/Compiler/Parsing.py
++++ b/Cython/Compiler/Parsing.py
+@@ -4135,11 +4135,16 @@ def p_oxython_fn(s: PyrexScanner, pos, ctx):
+ 
+ def p_oxython_let(s: PyrexScanner, pos, ctx):
+     # let <type> <declarator> [= <expr>], ...
++    # let auto <name> = <expr>, ...
+     # static <type> <declarator> [= <expr>], ...
+     keyword = s.systring
+     s.next()
+     if keyword == 'static' and ctx.level in ('function', 'other'):
+         error(pos, "static variables are not supported inside functions")
++    if s.looking_at_keyword('auto'):
++        if keyword != 'let':
++            s.error("'auto' is only allowed with 'let'")
++        return p_oxython_let_auto(s, pos)
+     if ctx.level not in _oxython_cdef_levels:
+         error(pos, "%s statement not allowed here; C variables must be declared "
+                    "at the top level of a function, class or module" % keyword)
+@@ -4150,6 +4155,27 @@ def p_oxython_let(s: PyrexScanner, pos, ctx):
+     return node
+ 
+ 
++def p_oxython_let_auto(s: PyrexScanner, pos):
++    # let auto <name> = <expr>, ...
++    s.next()  # 'auto'
++    names = []
++    stats = []
++    while True:
++        name_pos = s.position()
++        name = p_ident(s)
++        s.expect('=', "'let auto' needs an initial value to infer the type from")
++        rhs = p_test(s)
++        names.append((name_pos, name))
++        lhs = ExprNodes.NameNode(name_pos, name=name)
++        lhs.is_auto_initializer = True
++        stats.append(Nodes.SingleAssignmentNode(name_pos, lhs=lhs, rhs=rhs))
++        if s.sy != ',':
++            break
++        s.next()
++    s.expect_newline("Syntax error in let statement", ignore_semicolon=True)
++    return Nodes.StatListNode(pos, stats=[Nodes.AutoVarDeclNode(pos, names=names)] + stats)
++
++
+ @cython.cfunc
+ def p_decorators(s: PyrexScanner) -> list:
+     decorators = []
+diff --git a/Cython/Compiler/Symtab.py b/Cython/Compiler/Symtab.py
+index 38f070b15..8f11e92e0 100644
+--- a/Cython/Compiler/Symtab.py
++++ b/Cython/Compiler/Symtab.py
+@@ -221,6 +221,7 @@ class Entry:
+     buffer_aux = None
+     prev_entry = None
+     might_overflow = 0
++    is_auto_typed = False      # oxython 'let auto': always infer the C type
+     fused_cfunction = None
+     is_fused_specialized = False
+     utility_code_definition = None
+diff --git a/Cython/Compiler/TypeInference.py b/Cython/Compiler/TypeInference.py
+index 13d019864..16955d3f3 100644
+--- a/Cython/Compiler/TypeInference.py
++++ b/Cython/Compiler/TypeInference.py
+@@ -375,14 +375,22 @@ class SimpleAssignmentTypeInferer:
+         verbose = scope.directives['infer_types.verbose']
+ 
+         if enabled == True:
+-            spanning_type = aggressive_spanning_type
++            default_spanning_type = aggressive_spanning_type
+         elif enabled is None:  # safe mode
+-            spanning_type = safe_spanning_type
++            default_spanning_type = safe_spanning_type
+         else:
++            default_spanning_type = None
+             for entry in scope.entries.values():
+-                if entry.type is unspecified_type:
++                if entry.type is unspecified_type and not entry.is_auto_typed:
+                     self.set_entry_type(entry, py_object_type, scope)
+-            return
++            if not any(entry.type is unspecified_type for entry in scope.entries.values()):
++                return
++
++        def spanning_type(types, entry, scope):
++            # oxython 'let auto' variables always get their full inferred type
++            if entry.is_auto_typed or default_spanning_type is None:
++                return aggressive_spanning_type(types, entry.might_overflow, scope)
++            return default_spanning_type(types, entry.might_overflow, scope)
+ 
+         # Set of assignments
+         assignments = set()
+@@ -409,8 +417,7 @@ class SimpleAssignmentTypeInferer:
+                 node_type = py_object_type
+             else:
+                 entry = node.entry
+-                node_type = spanning_type(
+-                    types, entry.might_overflow, scope)
++                node_type = spanning_type(types, entry, scope)
+             node.inferred_type = node_type
+ 
+         def infer_name_node_type_partial(node):
+@@ -419,13 +426,22 @@ class SimpleAssignmentTypeInferer:
+             if not types:
+                 return
+             entry = node.entry
+-            return spanning_type(types, entry.might_overflow, scope)
++            return spanning_type(types, entry, scope)
++
++        def type_defining_assignments(entry):
++            # oxython 'let auto' variables take their type from the initialiser only
++            if entry.is_auto_typed:
++                initialisers = [assmt for assmt in entry.cf_assignments
++                                if getattr(assmt.lhs, 'is_auto_initializer', False)]
++                if initialisers:
++                    return initialisers
++            return entry.cf_assignments
+ 
+         def inferred_types(entry):
+             has_none = False
+             has_pyobjects = False
+             types = []
+-            for assmt in entry.cf_assignments:
++            for assmt in type_defining_assignments(entry):
+                 if assmt.rhs.is_none:
+                     has_none = True
+                 else:
+@@ -490,21 +506,20 @@ class SimpleAssignmentTypeInferer:
+             if entry.type is not unspecified_type:
+                 continue
+             entry_type = py_object_type
+-            if assmts_resolved.issuperset(entry.cf_assignments):
++            if assmts_resolved.issuperset(type_defining_assignments(entry)):
+                 types = inferred_types(entry)
+                 if types and all(types):
+-                    entry_type = spanning_type(
+-                        types, entry.might_overflow, scope)
++                    entry_type = spanning_type(types, entry, scope)
+                     inferred.add(entry)
+             self.set_entry_type(entry, entry_type, scope)
+ 
+         def reinfer():
+             dirty = False
+             for entry in inferred:
+-                for assmt in entry.cf_assignments:
++                for assmt in type_defining_assignments(entry):
+                     assmt.infer_type()
+                 types = inferred_types(entry)
+-                new_type = spanning_type(types, entry.might_overflow, scope)
++                new_type = spanning_type(types, entry, scope)
+                 if new_type != entry.type:
+                     self.set_entry_type(entry, new_type, scope)
+                     dirty = True

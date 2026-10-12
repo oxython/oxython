@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rin Arakaki <rnarkkx@gmail.com>
+Date: Mon, 12 Oct 2026 07:34:43 +0000
+Subject: [PATCH] oxython: add the loop statement
+
+
+diff --git a/Cython/Compiler/Parsing.py b/Cython/Compiler/Parsing.py
+index 362fae489..f98be82d5 100644
+--- a/Cython/Compiler/Parsing.py
++++ b/Cython/Compiler/Parsing.py
+@@ -4100,6 +4100,16 @@ def p_oxython_statement(s: PyrexScanner, ctx, pos, decorators):
+     # Returns None, consuming nothing, if the statement is not one of them.
+     if looking_at_oxython_item(s, ctx):
+         return p_oxython_item(s, pos, ctx, decorators)
++    if s.looking_at_keyword('loop') and s.peek()[0] == ':':
++        if decorators:
++            error(pos, "Decorators can only be followed by functions or classes")
++        if ctx.level in ('c_class_pxd', 'property'):
++            s.error("Executable statement not allowed here")
++        s.next()
++        body = p_suite(s)
++        # 'loop:' is 'while True:'; break works as usual
++        return Nodes.WhileStatNode(
++            pos, condition=ExprNodes.BoolNode(pos, value=True), body=body, else_clause=None)
+     if s.looking_at_keyword('use') and s.peek()[0] == 'IDENT':
+         if decorators:
+             error(pos, "Decorators can only be followed by functions or classes")

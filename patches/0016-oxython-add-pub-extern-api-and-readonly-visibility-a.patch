@@ -1,0 +1,85 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rin Arakaki <rnarkkx@gmail.com>
+Date: Mon, 12 Oct 2026 07:34:41 +0000
+Subject: [PATCH] oxython: add pub, extern, api and readonly visibility and
+ extern blocks
+
+
+diff --git a/Cython/Compiler/Parsing.py b/Cython/Compiler/Parsing.py
+index 4603a1f0f..af46c1187 100644
+--- a/Cython/Compiler/Parsing.py
++++ b/Cython/Compiler/Parsing.py
+@@ -11,11 +11,12 @@ cython.declare(Nodes=object, ExprNodes=object, EncodedString=object,
+                FileSourceDescriptor=object, lookup_unicodechar=object,
+                Future=object, Options=object, error=object, warning=object,
+                Builtin=object, ModuleNode=object, _unicode=object, _bytes=object,
+-               re=object, _parse_escape_sequences=object, _parse_escape_sequences_raw=object,
++               re=object, os=object, _parse_escape_sequences=object, _parse_escape_sequences_raw=object,
+                partial=object, reduce=object, PyrexTypes=object, Utils=object,
+                _CDEF_MODIFIERS=tuple, COMMON_BINOP_MISTAKES=dict)
+ 
+ from io import StringIO
++import os
+ import re
+ from unicodedata import lookup as lookup_unicodechar
+ from functools import partial, reduce
+@@ -3694,6 +3695,9 @@ def p_cdef_extern_block(s: PyrexScanner, pos, ctx):
+     else:
+         include_file = p_string_literal(s, 'u')[2]
+     ctx = ctx(cdef_flag = True, visibility = 'extern')
++    if s.oxython and not os.environ.get('CYTHON_FORCE_OXYTHON'):
++        # oxython: structs, enums and classes in extern blocks name C typedefs
++        ctx.typedef_flag = True
+     if s.systring == "namespace":
+         s.next()
+         ctx.namespace = p_string_literal(s, 'u')[2]
+@@ -4048,9 +4052,13 @@ def looking_at_oxython_item(s: PyrexScanner, ctx) -> cython.bint:
+     if s.sy != 'IDENT' or s.raw_ident:
+         return False
+     word = s.systring
+-    if word not in _oxython_item_words:
++    if word not in _oxython_item_words and word not in ('pub', 'extern', 'api', 'readonly'):
+         return False
+     next_sy, next_word = s.peek()
++    if word in ('pub', 'extern', 'api', 'readonly'):
++        # only before an item, so that C declarations like 'extern void f()' keep working
++        return next_sy == 'from' or next_sy == 'IDENT' and (
++            next_word in _oxython_item_words or next_word in ('api', 'fn'))
+     if word == 'const' and (ctx.cdef_flag or ctx.level == 'cpp_class' or ctx.visibility == 'extern'):
+         # in 'cdef' blocks, extern blocks and C++ classes 'const' is the C qualifier
+         return next_word == 'fn'
+@@ -4065,13 +4073,32 @@ def looking_at_oxython_item(s: PyrexScanner, ctx) -> cython.bint:
+ 
+ 
+ def p_oxython_item(s: PyrexScanner, pos, ctx, decorators):
++    visibility = ctx.visibility
++    api = ctx.api
+     overridable = False
+     if s.sy == 'cpdef':
+         s.next()
+         overridable = True
+-    ctx = ctx(overridable=overridable)
++    if s.looking_at_keyword('pub'):
++        s.next()
++        visibility = 'public'
++    elif s.looking_at_keyword('extern'):
++        s.next()
++        visibility = 'extern'
++    elif s.looking_at_keyword('readonly'):
++        s.next()
++        visibility = 'readonly'
++    if s.looking_at_keyword('api'):
++        s.next()
++        api = True
++    if api and visibility not in ('private', 'public'):
++        error(pos, "Cannot combine 'api' with '%s'" % visibility)
++    ctx = ctx(visibility=visibility, api=api, overridable=overridable)
+ 
+-    if (s.looking_at_keyword('fn') or
++    if visibility == 'extern' and s.sy == 'from':
++        check_oxython_level(s, ctx, pos, "extern block")
++        node = p_cdef_extern_block(s, pos, ctx)
++    elif (s.looking_at_keyword('fn') or
+             s.sy == 'IDENT' and s.systring in ('const', 'static') and s.peek()[1] == 'fn'):
+         node = p_oxython_fn(s, pos, ctx)
+     elif s.looking_at_keyword('let') or s.looking_at_keyword('static'):

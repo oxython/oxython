@@ -1,0 +1,15 @@
+// mode: run
+// tag: oxython
+
+#![cython::infer_types(false)]
+#![cython::boundscheck = false]
+
+use cython
+
+/// '#![cython::...]' attributes set module wide compiler directives.
+///
+/// >>> no_inference()
+/// 'Python object'
+fn no_inference():
+    x = 1.5
+    return cython.typeof(x)

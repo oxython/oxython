@@ -1,0 +1,15 @@
+// mode: error
+// tag: oxython
+
+fn f():
+    """A Python docstring."""
+
+#[staticmethod]
+@staticmethod
+fn g():
+    pass
+
+_ERRORS = u"""
+5:4: Docstrings are written as '///' or '/** */' doc comments in oxython files
+8:0: '@' is not used in oxython files; write '#[...]' attributes instead
+"""

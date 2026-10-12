@@ -1,0 +1,15 @@
+// mode: error
+// tag: oxython
+
+let auto at_module = 1
+
+fn f(x):
+    let auto x = 2
+    let auto y = 1
+    let auto y = 2
+
+_ERRORS = u"""
+4:0: 'let auto' is only allowed inside functions
+7:13: 'x' redeclared
+9:13: 'y' redeclared
+"""

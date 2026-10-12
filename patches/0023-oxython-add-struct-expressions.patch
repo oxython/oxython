@@ -1,0 +1,105 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rin Arakaki <rnarkkx@gmail.com>
+Date: Mon, 12 Oct 2026 07:34:43 +0000
+Subject: [PATCH] oxython: add struct expressions
+
+
+diff --git a/Cython/Compiler/ExprNodes.py b/Cython/Compiler/ExprNodes.py
+index b5f65be68..0995ee749 100644
+--- a/Cython/Compiler/ExprNodes.py
++++ b/Cython/Compiler/ExprNodes.py
+@@ -10249,6 +10249,34 @@ class FrozenSetFromArrayNode(ExprNode):
+         self.generate_gotref(code)
+ 
+ 
++class StructExprNode(ExprNode):
++    #  oxython struct expression 'Point { x = 1, y = 2 }'.
++    #  It builds a C struct or union value from its fields; nothing is called.
++    #
++    #  path             ExprNode               names the struct or union type
++    #  key_value_pairs  [DictItemNode]         field names and values
++
++    subexprs = []
++
++    def _struct_type(self, env):
++        type = self.path.analyse_as_type(env)
++        if type is not None and type.is_struct_or_union:
++            return type
++        return None
++
++    def infer_type(self, env):
++        return self._struct_type(env) or PyrexTypes.error_type
++
++    def analyse_types(self, env):
++        type = self._struct_type(env)
++        if type is None:
++            error(self.pos, "Struct expressions require a struct or union type")
++            self.type = PyrexTypes.error_type
++            return self
++        value = DictNode(self.pos, key_value_pairs=self.key_value_pairs)
++        return value.analyse_types(env).coerce_to(type, env)
++
++
+ class DictNode(ExprNode):
+     #  Dictionary constructor.
+     #
+diff --git a/Cython/Compiler/Parsing.py b/Cython/Compiler/Parsing.py
+index 75e5802b3..8c186b42d 100644
+--- a/Cython/Compiler/Parsing.py
++++ b/Cython/Compiler/Parsing.py
+@@ -529,7 +529,7 @@ def p_power(s: PyrexScanner):
+         await_pos = s.position()
+         s.next()
+     n1 = p_atom(s)
+-    while s.sy in ('(', '[', '.') or looking_at_path_separator(s):
++    while s.sy in ('(', '[', '.') or looking_at_path_separator(s) or looking_at_struct_expr(s, n1):
+         n1 = p_trailer(s, n1)
+     if await_pos:
+         n1 = ExprNodes.AwaitExprNode(await_pos, arg=n1)
+@@ -559,6 +559,8 @@ def p_trailer(s: PyrexScanner, node1):
+         return p_call(s, node1)
+     elif s.sy == '[':
+         return p_index(s, node1)
++    elif s.sy == '{':
++        return p_oxython_struct_expr(s, node1)
+     else:  # s.sy in ('.', '::')
+         s.next()
+         name = p_ident(s)
+@@ -675,6 +677,37 @@ def looking_at_path_separator(s: PyrexScanner) -> cython.bint:
+     return s.sy == '::' and not s.in_subscript and s.peek()[0] == 'IDENT'
+ 
+ 
++@cython.cfunc
++def looking_at_struct_expr(s: PyrexScanner, node) -> cython.bint:
++    # oxython 'Point { x = 1, y = 2 }'.  A '{' directly after a name or an
++    # attribute is never valid Python, so this does not change existing code.
++    return s.sy == '{' and s.oxython and (node.is_name or isinstance(node, ExprNodes.AttributeNode))
++
++
++def p_oxython_struct_expr(s: PyrexScanner, path):
++    # Path { field = value, ... }  builds a C struct or union value
++    pos = s.position()
++    s.next()  # '{'
++    in_subscript = s.in_subscript
++    s.in_subscript = False
++    items = []
++    try:
++        while s.sy != '}':
++            name_pos = s.position()
++            name = p_ident(s)
++            s.expect('=', "Expected 'field = value' in struct expression")
++            value = p_test(s)
++            items.append(ExprNodes.DictItemNode(
++                name_pos, key=ExprNodes.IdentifierStringNode(name_pos, value=name), value=value))
++            if s.sy != ',':
++                break
++            s.next()
++        s.expect('}')
++    finally:
++        s.in_subscript = in_subscript
++    return ExprNodes.StructExprNode(pos, path=path, key_value_pairs=items)
++
++
+ @cython.cfunc
+ def p_call(s: PyrexScanner, function):
+     # s.sy == '('

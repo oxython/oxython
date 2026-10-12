@@ -1,0 +1,55 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rin Arakaki <rnarkkx@gmail.com>
+Date: Mon, 12 Oct 2026 07:34:41 +0000
+Subject: [PATCH] oxython: add type aliases
+
+
+diff --git a/Cython/Compiler/Parsing.py b/Cython/Compiler/Parsing.py
+index 5294af010..4438128f0 100644
+--- a/Cython/Compiler/Parsing.py
++++ b/Cython/Compiler/Parsing.py
+@@ -4033,7 +4033,7 @@ def p_oxython_statement(s: PyrexScanner, ctx, pos, decorators):
+ 
+ # words that can start an oxython item
+ _oxython_item_words = cython.declare(frozenset, frozenset((
+-    'fn', 'let', 'static', 'const')))
++    'fn', 'let', 'static', 'const', 'type')))
+ 
+ _oxython_cdef_levels = cython.declare(tuple, (
+     'module', 'module_pxd', 'function', 'c_class', 'c_class_pxd', 'cpp_class'))
+@@ -4071,6 +4071,8 @@ def p_oxython_item(s: PyrexScanner, pos, ctx, decorators):
+         node = p_oxython_let(s, pos, ctx)
+     elif s.looking_at_keyword('const'):
+         node = p_oxython_const(s, pos, ctx)
++    elif s.looking_at_keyword('type'):
++        node = p_oxython_type_alias(s, pos, ctx)
+     else:
+         s.error("Expected an item")
+ 
+@@ -4214,6 +4216,26 @@ def coerce_oxython_const_value(pos, value, base_type):
+     return value
+ 
+ 
++def p_oxython_type_alias(s: PyrexScanner, pos, ctx):
++    # type <name> ["<cname>"] = <type>
++    s.next()  # 'type'
++    if ctx.level not in ('module', 'module_pxd', 'cpp_class'):
++        s.error("type alias not allowed here")
++    ctx = ctx(typedef_flag=True)
++    declarator = p_c_declarator(s, ctx, is_type=True, nonempty=True)
++    s.expect('=')
++    base_type = p_c_base_type(s)
++    abstract = p_c_declarator(s, ctx, empty=True, is_type=True)
++    if not isinstance(abstract, Nodes.CNameDeclaratorNode):
++        # pointers, arrays and function types: 'type IntPtr = i32*'
++        base_type = Nodes.CComplexBaseTypeNode(pos, base_type=base_type, declarator=abstract)
++    s.expect_newline("Syntax error in type alias", ignore_semicolon=True)
++    return Nodes.CTypeDefNode(
++        pos, base_type=base_type, declarator=declarator,
++        visibility=ctx.visibility, api=ctx.api,
++        in_pxd=ctx.level == 'module_pxd')
++
++
+ @cython.cfunc
+ def p_decorators(s: PyrexScanner) -> list:
+     decorators = []

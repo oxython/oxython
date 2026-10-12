@@ -1,0 +1,19 @@
+// mode: error
+// tag: oxython
+
+fn i32 not_a_function
+let i32 not_a_variable(i32 a)
+const fn i32 wrong()
+
+fn f():
+    static i32 local_static
+    if True:
+        let i32 nested = 1
+
+_ERRORS = u"""
+4:7: 'fn' must declare a function; use 'let' for variables
+5:0: use 'fn' to declare functions
+6:0: 'const fn' is only allowed in C++ classes
+9:4: static variables are not supported inside functions
+11:8: let statement not allowed here; C variables must be declared at the top level of a function, class or module
+"""

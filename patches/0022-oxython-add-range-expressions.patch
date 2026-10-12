@@ -1,0 +1,116 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rin Arakaki <rnarkkx@gmail.com>
+Date: Mon, 12 Oct 2026 07:34:43 +0000
+Subject: [PATCH] oxython: add range expressions
+
+
+diff --git a/Cython/Compiler/Lexicon.py b/Cython/Compiler/Lexicon.py
+index f53e5ccc1..454b47ed1 100644
+--- a/Cython/Compiler/Lexicon.py
++++ b/Cython/Compiler/Lexicon.py
+@@ -64,6 +64,8 @@ def make_lexicon(oxython=False, rust_comments=False):
+         float_type_suffix = Str("f32", "f64")
+         intliteral = intliteral | (intconst + int_type_suffix)
+         fltconst = fltconst | ((fltconst | decimal) + float_type_suffix)
++        # '1..5' must not lex as the float '1.' followed by '.5'
++        int_before_range = decimal + Str("..", "..=")
+     imagconst = (intconst | fltconst) + Any("jJ")
+ 
+     # invalid combinations of prefixes are caught in p_string_literal
+@@ -117,7 +119,7 @@ def make_lexicon(oxython=False, rust_comments=False):
+         else:
+             # '#[' starts an attribute, not a comment
+             comment = Str("#") + Opt(AnyBut("[\n") + Rep(AnyBut("\n")))
+-        diphthong = diphthong | Str("::")
++        diphthong = diphthong | Str("::", "..", "..=")
+ 
+     def generate_ft_string_states():
+         out = []
+@@ -200,6 +202,7 @@ def make_lexicon(oxython=False, rust_comments=False):
+             indent_rules.append((Opt(spaces) + Opt(comment) + lineterm, Method('blank_line')))
+             oxython_rules.append((Str("#!["), Method('open_bracket_action')))
+         oxython_rules.append((Str("#["), Method('open_bracket_action')))
++        oxython_rules.append((int_before_range, Method('int_before_range_action')))
+ 
+     return Lexicon(oxython_rules + [
+         (name, Method('normalize_ident')),
+diff --git a/Cython/Compiler/Parsing.py b/Cython/Compiler/Parsing.py
+index f98be82d5..75e5802b3 100644
+--- a/Cython/Compiler/Parsing.py
++++ b/Cython/Compiler/Parsing.py
+@@ -277,12 +277,32 @@ def p_starred_expr(s: PyrexScanner):
+         s.next()
+     else:
+         starred = False
+-    expr = p_bit_expr(s)
++    expr = p_range_expr(s)
+     if starred:
+         expr = ExprNodes.StarredUnpackingNode(pos, expr)
+     return expr
+ 
+ 
++@cython.cfunc
++def p_range_expr(s: PyrexScanner):
++    # oxython: 'a..b' is range(a, b) and 'a..=b' is range(a, b + 1).
++    # Only the oxython lexicon produces these tokens.  The operator binds
++    # just above comparisons, so 'x in 0..n' and '0..n+1' read naturally.
++    start = p_bit_expr(s)
++    if s.sy != '..' and s.sy != '..=':
++        return start
++    pos = s.position()
++    inclusive = s.sy == '..='
++    s.next()
++    stop = p_bit_expr(s)
++    if inclusive:
++        stop = ExprNodes.binop_node(pos, '+', stop, ExprNodes.IntNode(pos, value='1'))
++    node = ExprNodes.SimpleCallNode(
++        pos, function=ExprNodes.NameNode(pos, name=EncodedString('range')), args=[start, stop])
++    node.oxython_range = (start, stop)
++    return node
++
++
+ @cython.cfunc
+ def p_cascaded_cmp(s: PyrexScanner):
+     pos = s.position()
+@@ -729,6 +749,10 @@ def p_subscript(s: PyrexScanner) -> list:
+     start = p_slice_element(s, (':', '::'))
+     split_double_colon(s)
+     if s.sy != ':':
++        bounds = getattr(start, 'oxython_range', None)
++        if bounds is not None:
++            # oxython: seq[a..b] is the slice seq[a:b]
++            return list(bounds)
+         return [start]
+     s.next()
+     stop = p_slice_element(s, (':', '::', ',', ']'))
+@@ -1996,10 +2020,10 @@ def p_from_import_statement(s: PyrexScanner, first_statement: cython.bint = 0):
+     # s.sy == 'from'
+     pos = s.position()
+     s.next()
+-    if s.sy in ('.', '...'):
+-        # count relative import level
++    if s.sy in ('.', '..', '...'):
++        # count relative import level ('..' is a single token in oxython files)
+         level = 0
+-        while s.sy in ('.', '...'):
++        while s.sy in ('.', '..', '...'):
+             level += len(s.sy)
+             s.next()
+     else:
+diff --git a/Cython/Compiler/Scanning.py b/Cython/Compiler/Scanning.py
+index ece24124b..fc7800cff 100644
+--- a/Cython/Compiler/Scanning.py
++++ b/Cython/Compiler/Scanning.py
+@@ -501,6 +501,12 @@ class PyrexScanner(Scanner):
+     def unclosed_block_comment(self, text):
+         self.error_at_scanpos("Unterminated block comment")
+ 
++    def int_before_range_action(self, text):
++        # oxython: '1..5' / '1..=5' => INT '1', then the range operator
++        op = '..=' if text.endswith('..=') else '..'
++        self.produce('INT', text[:-len(op)].replace('_', ''))
++        self.produce(op, op)
++
+     def current_level(self):
+         return self.indentation_stack[-1]
+ 

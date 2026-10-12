@@ -1,0 +1,192 @@
+// mode: run
+// tag: oxython
+
+use cython
+use libc::stdlib::{malloc, free}
+
+// ---- module level items -------------------------------------------------
+
+static i32 counter = 0
+static f64 ratio = 0.5, scale = 2.0
+
+const i32 SIZE = 4
+const auto NAME = "ox"
+const f64 HALF = 1
+
+type Index = isize
+type IntPtr = i32*
+
+struct Point:
+    f64 x
+    f64 y
+
+union Number:
+    i64 i
+    f64 f
+
+enum Color:
+    RED
+    GREEN = 5
+    BLUE
+
+packed struct Packed:
+    u8 tag
+    u32 value
+
+extern from "math.h":
+    fn f64 sqrt(f64 x) nogil
+    const f64 HUGE_VAL
+
+extern from *:
+    """
+    static int answer(void) { return 42; }
+    static const char *greeting = "hello";
+    """
+    fn i32 answer()
+    const char *greeting
+
+// ---- functions ----------------------------------------------------------
+
+fn i32 add(i32 a, i32 b):
+    return a + b
+
+fn inline f64 square(f64 x) noexcept nogil:
+    return x * x
+
+fn Point make_point(f64 x, f64 y):
+    let Point p
+    p.x = x
+    p.y = y
+    return p
+
+fn i32* offset(i32* values, Index n):
+    return values + n
+
+fn i32 forward(i32 x):
+    return x + 1
+
+/// >>> twice(21)
+/// 42
+cpdef fn i32 twice(i32 x):
+    return 2 * x
+
+/// >>> test_static_and_const()
+/// (1, 4, 'ox', 0.5, 1.0)
+fn test_static_and_const():
+    global counter
+    counter += 1
+    return counter, SIZE, NAME, ratio, HALF
+
+/// >>> test_functions()
+/// (5, 2.25, 42, 3)
+fn test_functions():
+    return add(2, 3), square(1.5), answer(), forward(2)
+
+/// >>> test_structs()
+/// (3.0, 4.0, 5.0, 5)
+fn test_structs():
+    let Point p = make_point(3, 4)
+    return p.x, p.y, sqrt(square(p.x) + square(p.y)), sizeof(Packed)
+
+/// >>> test_union_and_enum()
+/// (7, 0, 5, 6)
+fn test_union_and_enum():
+    let Number n
+    n.i = 7
+    return n.i, RED, GREEN, BLUE
+
+/// >>> test_type_aliases()
+/// (True, 30)
+fn test_type_aliases():
+    let IntPtr values = <IntPtr>malloc(4 * sizeof(i32))
+    let Index i
+    for i in range(4):
+        values[i] = i * 10
+    result = offset(values, 3)[0]
+    free(values)
+    return sizeof(Index) == sizeof(Py_ssize_t), result
+
+/// >>> test_extern_values()
+/// (True, b'hello')
+fn test_extern_values():
+    return HUGE_VAL > 1e300, greeting
+
+/// >>> test_let()
+/// (10, 6, 3.5)
+fn test_let():
+    let i32 total = 0, i
+    let f64 x = 3.5
+    let i32 *p = &total
+    for i in range(5):
+        total += i
+    p[0] += 0
+    return total, add(total, -4), x
+
+/// 'let auto' gives the variable the C type of its initial value.
+/// Later assignments are converted to that type, as in Rust or C++.
+///
+/// >>> test_let_auto(4)
+/// ('double', 'int', 'long long', 'Point', 6.0)
+fn test_let_auto(n):
+    let auto total = 0.0
+    let auto count = add(1, 1), big = 5i64
+    let auto p = make_point(1, 2)
+    for i in range(n):
+        total += i
+    return cython.typeof(total), cython.typeof(count), cython.typeof(big), cython.typeof(p), total
+
+/// 'let auto' works even when type inference is switched off.
+///
+/// >>> test_let_auto_without_inference()
+/// ('double', 'Python object')
+#[cython.infer_types(False)]
+fn test_let_auto_without_inference():
+    let auto x = 1.5
+    y = 2.5
+    return cython.typeof(x), cython.typeof(y)
+
+// ---- extension types ----------------------------------------------------
+
+/// >>> a = Account.open_with(10)
+/// >>> a.deposit(5)
+/// >>> a.balance()
+/// 15.0
+/// >>> a.id
+/// 1
+#[pyclass]
+struct Account:
+    f64 _balance
+    pub i32 id
+
+impl Account:
+    fn __init__(self):
+        self.id = 1
+
+    #[staticmethod]
+    fn open_with(amount):
+        return Account.create(amount)
+
+    static fn Account create(f64 amount):
+        let Account account = Account()
+        account._balance = amount
+        return account
+
+    fn void add(self, f64 amount) noexcept:
+        self._balance += amount
+
+    fn deposit(self, amount):
+        self.add(amount)
+
+    fn balance(self):
+        return self._balance
+
+/// Item words are contextual; they stay usable as ordinary names.
+///
+/// >>> test_names_still_free()
+/// (1, 2, 3, 4)
+fn test_names_still_free():
+    fn = 1
+    let = 2
+    static = 3
+    type = lambda x: x
+    return fn, let, static, type(4)

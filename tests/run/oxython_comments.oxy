@@ -1,0 +1,32 @@
+// mode: run
+// tag: oxython
+
+//! Inner doc comments and /// outer doc comments are comments too.
+
+/* A block comment
+   /* nests, as in Rust */
+   and ends here. */
+
+/// The answer.
+///
+/// >>> answer()
+/// 42
+fn answer():   // trailing comment
+    /* leading block comment */
+    let i32 x = 40 /* inline */ + 2
+    return x  // done
+
+/// '#' only starts attributes; strings keep their contents.
+///
+/// >>> hash_is_not_a_comment()
+/// ('# not a comment', '// nor this', '/* nor this */')
+fn hash_is_not_a_comment():
+    return "# not a comment", "// nor this", "/* nor this */"
+
+/**
+ * Block doc comments.
+ */
+/// >>> after_block_doc_comment()
+/// 1
+fn after_block_doc_comment():
+    return 1

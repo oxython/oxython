@@ -1,0 +1,52 @@
+// mode: run
+// tag: oxython
+
+use cython
+
+/// Integer '/' and '%' truncate towards zero, as in Rust and C.
+///
+/// >>> ints(7, 2), ints(-7, 2), ints(7, -2)
+/// ((3, 1), (-3, -1), (-3, 1))
+fn ints(i32 a, i32 b):
+    return a / b, a % b
+
+/// >>> int_result_type(7, 2)
+/// 'int'
+fn int_result_type(i32 a, i32 b):
+    let auto q = a / b
+    return cython.typeof(q)
+
+/// >>> in_place(-7, 2)
+/// (-3, -1)
+fn in_place(i32 a, i32 b):
+    let i32 q = a, r = a
+    q /= b
+    r %= b
+    return q, r
+
+/// Division by zero raises instead of being undefined, like a Rust panic.
+///
+/// >>> by_zero(1, 0)
+/// Traceback (most recent call last):
+/// ZeroDivisionError: integer division or modulo by zero
+fn by_zero(i32 a, i32 b):
+    return a / b
+
+/// Constant folding follows the same rules.
+///
+/// >>> constants()
+/// (3, -3, -1, 3.5)
+fn constants():
+    return 7 / 2, -7 / 2, -7 % 2, 7.0 / 2
+
+/// >>> floats(7, 2)
+/// 3.5
+fn floats(f64 a, f64 b):
+    return a / b
+
+/// Python objects keep Python's operators.
+///
+/// >>> python_objects(-7, 2)
+/// (-3.5, 1)
+fn python_objects(a, b):
+    return a / b, a % b

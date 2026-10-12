@@ -1,0 +1,235 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rin Arakaki <rnarkkx@gmail.com>
+Date: Mon, 12 Oct 2026 07:34:41 +0000
+Subject: [PATCH] oxython: add use statements for cimports
+
+
+diff --git a/Cython/Build/Dependencies.py b/Cython/Build/Dependencies.py
+index 9bf211226..5b733c0ba 100644
+--- a/Cython/Build/Dependencies.py
++++ b/Cython/Build/Dependencies.py
+@@ -403,6 +403,67 @@ dependency_regex = re.compile(
+     r"(?:^ [ \t\f]* cdef     [ \t\f]+ extern [ \t\f]+ from [ \t\f]+ ['\"] ([^'\"]+) ['\"] ) |"
+     r"(?:^ [ \t\f]* include  [ \t\f]+ ['\"] ([^'\"]+) ['\"] )",
+     re.MULTILINE | re.VERBOSE)
++oxython_use_regex = re.compile(r"^[ \t\f]*use[ \t\f]+", re.MULTILINE)
++
++
++def oxython_use_dependencies(source):
++    # Modules named by oxython 'use' trees, e.g. 'use a::{b::{c, d}, e}' gives
++    # 'a', 'a.b', 'a.b.c', 'a.b.d', 'a.e', like the equivalent cimports would.
++    modules = []
++    for m in oxython_use_regex.finditer(source):
++        # the statement ends at a newline outside braces
++        depth, end = 0, m.end()
++        while end < len(source):
++            c = source[end]
++            if c == '{':
++                depth += 1
++            elif c == '}':
++                depth -= 1
++            elif c == '\n' and depth <= 0:
++                break
++            end += 1
++        tokens = re.findall(r"::|[{},*]|\w+", source[m.end():end])
++        _collect_use_modules(tokens, 0, [], modules)
++    return modules
++
++
++def _collect_use_modules(tokens, i, prefix, modules):
++    # parse comma separated use trees starting at tokens[i]; returns the next index
++    while i < len(tokens):
++        path = list(prefix)
++        level = 0
++        while i < len(tokens) and tokens[i] == 'super' and not prefix:
++            level += 1
++            i += 2  # 'super' '::'
++        while i < len(tokens):
++            tok = tokens[i]
++            if tok == '{':
++                i = _collect_use_modules(tokens, i + 1, path, modules)
++                i += 1  # '}'
++                break
++            if tok in ('*', ',', '}') or tok == 'as':
++                break
++            if tok != 'self':
++                path.append(tok)
++            i += 1
++            if i < len(tokens) and tokens[i] == '::':
++                i += 1
++                continue
++            break
++        if path:
++            dotted = '.' * level + '.'.join(path)
++            modules.append(dotted)
++            if len(path) > 1:
++                modules.append('.' * level + '.'.join(path[:-1]))
++        while i < len(tokens) and tokens[i] not in (',', '}'):
++            i += 1  # skip '*', 'as name'
++        if i < len(tokens) and tokens[i] == ',':
++            i += 1
++            continue
++        return i
++    return i
++
++
+ dependency_after_from_regex = re.compile(
+     r"(?:^ [ \t\f]+ \( ([\w., \t\f]*) \) [ \t\f]* [#\n]) |"
+     r"(?:^ [ \t\f]+    ([\w., \t\f]*)    [ \t\f]* [#\n])",
+@@ -492,6 +553,8 @@ def parse_dependencies(source_filename):
+     cimports = []
+     includes = []
+     externs  = []
++    if source_filename.endswith(('.oxy', '.oxd', '.oxi')):
++        cimports.extend(oxython_use_dependencies(source))
+     for m in dependency_regex.finditer(source):
+         pycimports_from, cimport_from, pycimports_list, cimport_list, extern, include = m.groups()
+         if pycimports_from:
+diff --git a/Cython/Compiler/Lexicon.py b/Cython/Compiler/Lexicon.py
+index 87eb30e9a..304d76f76 100644
+--- a/Cython/Compiler/Lexicon.py
++++ b/Cython/Compiler/Lexicon.py
+@@ -117,6 +117,7 @@ def make_lexicon(oxython=False, rust_comments=False):
+         else:
+             # '#[' starts an attribute, not a comment
+             comment = Str("#") + Opt(AnyBut("[\n") + Rep(AnyBut("\n")))
++        diphthong = diphthong | Str("::")
+ 
+     def generate_ft_string_states():
+         out = []
+diff --git a/Cython/Compiler/Parsing.py b/Cython/Compiler/Parsing.py
+index af46c1187..a44e6ac5a 100644
+--- a/Cython/Compiler/Parsing.py
++++ b/Cython/Compiler/Parsing.py
+@@ -708,11 +708,13 @@ def p_subscript(s: PyrexScanner) -> list:
+     # Parse a subscript and return a list of
+     # 1, 2 or 3 ExprNodes, depending on how
+     # many slice elements were encountered.
+-    start = p_slice_element(s, (':',))
++    start = p_slice_element(s, (':', '::'))
++    split_double_colon(s)
+     if s.sy != ':':
+         return [start]
+     s.next()
+-    stop = p_slice_element(s, (':', ',', ']'))
++    stop = p_slice_element(s, (':', '::', ',', ']'))
++    split_double_colon(s)
+     if s.sy != ':':
+         return [start, stop]
+     s.next()
+@@ -720,6 +722,16 @@ def p_subscript(s: PyrexScanner) -> list:
+     return [start, stop, step]
+ 
+ 
++def split_double_colon(s: PyrexScanner):
++    # The oxython lexicon reads '::' as one token. Inside slices it still
++    # means two colons, as in 'a[::2]' or 'double[:, ::1]'.
++    if s.sy == '::':
++        pos = s.position()
++        s.sy = s.systring = ':'
++        s.last_token_position_tuple = (pos[0], pos[1], pos[2] + 1)
++        s.put_back(':', ':', pos)
++
++
+ @cython.cfunc
+ def p_slice_element(s: PyrexScanner, follow_set):
+     # Simple expression which may be missing iff
+@@ -3034,12 +3046,12 @@ def is_memoryviewslice_access(s: PyrexScanner) -> cython.bint:
+     saved = [(s.sy, s.systring, s.position())]
+     s.next()
+     retval = False
+-    if s.systring == ':':
++    if s.systring in (':', '::'):
+         retval = True
+     elif s.sy == 'INT':
+         saved.append((s.sy, s.systring, s.position()))
+         s.next()
+-        if s.sy == ':':
++        if s.sy in (':', '::'):
+             retval = True
+ 
+     for sv in saved[::-1]:
+@@ -4032,9 +4044,83 @@ def p_oxython_statement(s: PyrexScanner, ctx, pos, decorators):
+     # Returns None, consuming nothing, if the statement is not one of them.
+     if looking_at_oxython_item(s, ctx):
+         return p_oxython_item(s, pos, ctx, decorators)
++    if s.looking_at_keyword('use') and s.peek()[0] == 'IDENT':
++        if decorators:
++            error(pos, "Decorators can only be followed by functions or classes")
++        return p_oxython_use(s, pos)
+     return None
+ 
+ 
++def p_oxython_use(s: PyrexScanner, pos):
++    # use <tree>[, <tree>...] where, as in Rust,
++    #   tree:  [super::]* name (:: name)* [:: (* | {tree, ...})] [as name]
++    # 'use a' is 'cimport a'; 'use a::b::c' is 'from a.b cimport c';
++    # 'use a::{self, b}' is 'from . cimport a' plus 'from a cimport b'.
++    s.next()  # 'use'
++    stats = []
++    while True:
++        level = 0
++        while s.looking_at_keyword('super'):
++            level += 1
++            s.next()
++            s.expect('::')
++        p_oxython_use_tree(s, [], level, stats)
++        if s.sy != ',':
++            break
++        s.next()
++    s.expect_newline("Expected a newline", ignore_semicolon=True)
++    if len(stats) == 1:
++        return stats[0]
++    return Nodes.StatListNode(pos, stats=stats)
++
++
++def p_oxython_use_tree(s: PyrexScanner, prefix, level, stats):
++    pos = s.position()
++    path = list(prefix)
++    while True:
++        if s.sy == '{':
++            s.next()
++            while s.sy != '}':
++                p_oxython_use_tree(s, path, level, stats)
++                if s.sy != ',':
++                    break
++                s.next()
++            s.expect('}')
++            return
++        if s.sy == '*':
++            if not path:
++                s.error("Expected a module before '*'")
++            s.next()
++            stats.append(make_oxython_from_cimport(
++                s, pos, path, level, [(pos, s.context.intern_ustring('*'), None)]))
++            return
++        name_pos = s.position()
++        name = p_ident(s)
++        if name == 'self' and prefix and len(path) == len(prefix):
++            name = None  # 'a::{self}' names the module 'a' itself
++        else:
++            path.append(name)
++        if name is not None and s.sy == '::':
++            s.next()
++            continue
++        break
++    as_name = p_as_name(s)
++    if len(path) == 1 and not level:
++        stats.append(Nodes.CImportStatNode(
++            pos, module_name=path[0], as_name=as_name,
++            is_absolute=Future.absolute_import in s.context.future_directives))
++    else:
++        stats.append(make_oxython_from_cimport(s, pos, path[:-1], level, [(name_pos, path[-1], as_name)]))
++
++
++def make_oxython_from_cimport(s: PyrexScanner, pos, module_path, level, imported_names):
++    if not level:
++        level = 0 if Future.absolute_import in s.context.future_directives else None
++    return Nodes.FromCImportStatNode(
++        pos, module_name=s.context.intern_ustring('.'.join(module_path)),
++        relative_level=level, imported_names=imported_names)
++
++
+ # words that can start an oxython item
+ _oxython_item_words = cython.declare(frozenset, frozenset((
+     'fn', 'let', 'static', 'const', 'type', 'struct', 'union', 'enum', 'packed')))

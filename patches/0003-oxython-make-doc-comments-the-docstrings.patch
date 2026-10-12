@@ -1,0 +1,218 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rin Arakaki <rnarkkx@gmail.com>
+Date: Mon, 12 Oct 2026 07:34:38 +0000
+Subject: [PATCH] oxython: make doc comments the docstrings
+
+
+diff --git a/Cython/Compiler/Lexicon.py b/Cython/Compiler/Lexicon.py
+index e451c7ac4..e5981517a 100644
+--- a/Cython/Compiler/Lexicon.py
++++ b/Cython/Compiler/Lexicon.py
+@@ -173,10 +173,18 @@ def make_lexicon(oxython=False, rust_comments=False):
+             extra_states.append(State('BLOCK_COMMENT', [
+                 (Str("/*"), Method('begin_block_comment')),
+                 (Str("*/"), Method('end_block_comment')),
+-                (Rep1(AnyBut("/*")), IGNORE),
+-                (Any("/*"), IGNORE),
++                (Rep1(AnyBut("/*")), Method('block_comment_text')),
++                (Any("/*"), Method('block_comment_text')),
+                 (Eof, Method('unclosed_block_comment')),
+             ]))
++            # doc comments '/// ...', '//! ...' and '/** ... */' become docstrings
++            doc_comment = Str("///", "//!") + Rep(AnyBut("\n"))
++            oxython_rules.append((doc_comment, Method('doc_comment')))
++            indent_rules.append((Opt(spaces) + doc_comment + lineterm, Method('doc_comment')))
++            oxython_rules.append((Str("/**"), Method('begin_doc_block_comment')))
++            indent_rules.append((Opt(spaces) + Str("/**"), Method('begin_doc_block_comment')))
++            # blank and comment lines may separate a doc comment from its item
++            indent_rules.append((Opt(spaces) + Opt(comment) + lineterm, Method('blank_line')))
+ 
+     return Lexicon(oxython_rules + [
+         (name, Method('normalize_ident')),
+diff --git a/Cython/Compiler/Parsing.py b/Cython/Compiler/Parsing.py
+index 642ed5202..0fe9e6aff 100644
+--- a/Cython/Compiler/Parsing.py
++++ b/Cython/Compiler/Parsing.py
+@@ -2658,7 +2658,12 @@ def p_statement_list(s: PyrexScanner, ctx, first_statement: cython.bint = 0):
+     pos = s.position()
+     stats = []
+     while s.sy not in ('DEDENT', 'EOF'):
++        if s.rust_comments:
++            # oxython: a doc comment documents the item that follows it
++            s.item_doc = s.take_doc_comment()
+         stat = p_statement(s, ctx, first_statement = first_statement)
++        if s.rust_comments:
++            attach_oxython_doc(s, stat)
+         if isinstance(stat, Nodes.PassStatNode):
+             continue
+         stats.append(stat)
+@@ -2678,13 +2683,16 @@ def p_suite(s: PyrexScanner, ctx=Ctx()):
+ 
+ @cython.cfunc
+ def p_suite_with_docstring(s: PyrexScanner, ctx, with_doc_only: cython.bint = False) -> tuple:
++    item_doc = None
++    if s.rust_comments and not with_doc_only:
++        item_doc, s.item_doc = s.item_doc, None
+     s.expect(':')
+     doc = None
+     if s.sy == 'NEWLINE':
+         s.next()
+         s.expect_indent()
+         if with_doc_only:
+-            doc = p_doc_string(s)
++            doc = p_doc_string(s, verbatim=True)
+         body = p_statement_list(s, ctx)
+         s.expect_dedent()
+     else:
+@@ -2697,9 +2705,21 @@ def p_suite_with_docstring(s: PyrexScanner, ctx, with_doc_only: cython.bint = Fa
+             s.expect_newline("Syntax error in declarations", ignore_semicolon=True)
+     if not with_doc_only:
+         doc, body = _extract_docstring(body)
++        if s.rust_comments:
++            if doc is not None:
++                error(body.pos, "Docstrings are written as '///' or '/** */' doc comments in oxython files")
++            doc = item_doc
+     return doc, body
+ 
+ 
++@cython.cfunc
++def attach_oxython_doc(s: PyrexScanner, node):
++    # A doc comment before an item without a body ('let', a field, ...)
++    doc, s.item_doc = s.item_doc, None
++    if doc is not None and hasattr(node, 'doc') and node.doc is None:
++        node.doc = doc
++
++
+ @cython.cfunc
+ def p_positional_and_keyword_args(s: PyrexScanner, end_sy_set, templates = None) -> tuple[list, list]:
+     """
+@@ -4105,11 +4125,14 @@ def p_ignorable_statement(s: PyrexScanner):
+ 
+ 
+ @cython.cfunc
+-def p_doc_string(s: PyrexScanner):
++def p_doc_string(s: PyrexScanner, verbatim: cython.bint = False):
+     if s.sy == 'BEGIN_STRING':
+         pos = s.position()
+         kind, bytes_result, unicode_result = p_cat_string_literal(s)
+         s.expect_newline("Syntax error in doc string", ignore_semicolon=True)
++        if s.rust_comments and not verbatim:
++            error(pos, "Docstrings are written as '///' or '/** */' doc comments in oxython files")
++            return None
+         if kind in ('u', ''):
+             return unicode_result
+         warning(pos, "Python 3 requires docstrings to be unicode strings")
+@@ -4215,6 +4238,9 @@ def p_module(s: PyrexScanner, pxd, full_module_name, ctx=Ctx):
+ 
+     level = 'module_pxd' if pxd else 'module'
+     doc = p_doc_string(s)
++    if s.rust_comments:
++        # oxython: '//!' comments document the module
++        doc = s.take_doc_comment(inner=True)
+     body = p_statement_list(s, ctx(level=level), first_statement=True)
+     if s.sy != 'EOF':
+         s.error("Syntax error in statement [%s,%s]" % (
+diff --git a/Cython/Compiler/Scanning.pxd b/Cython/Compiler/Scanning.pxd
+index 761a6f5fa..ed96323d3 100644
+--- a/Cython/Compiler/Scanning.pxd
++++ b/Cython/Compiler/Scanning.pxd
+@@ -30,6 +30,10 @@ cdef class PyrexScanner(Scanner):
+     cdef public bint rust_comments
+     cdef public Py_ssize_t block_comment_depth
+     cdef public str block_comment_return_state
++    cdef public list block_comment_doc
++    cdef public list doc_comments
++    cdef public set blank_lines
++    cdef public object item_doc
+     cdef public source_encoding
+     cdef dict keywords
+     cdef public list[Py_ssize_t] indentation_stack
+diff --git a/Cython/Compiler/Scanning.py b/Cython/Compiler/Scanning.py
+index 54cadb2ab..a09bd194f 100644
+--- a/Cython/Compiler/Scanning.py
++++ b/Cython/Compiler/Scanning.py
+@@ -353,6 +353,10 @@ class PyrexScanner(Scanner):
+         self.rust_comments = self.oxython and not os.environ.get('CYTHON_FORCE_OXYTHON')
+         self.block_comment_depth = 0
+         self.block_comment_return_state = ''
++        self.block_comment_doc = []
++        self.doc_comments = []
++        self.blank_lines = set()
++        self.item_doc = None
+         Scanner.__init__(self, get_lexicon(self.oxython, self.rust_comments), file, filename, initial_pos)
+ 
+         if filename.is_python_file():
+@@ -421,6 +425,73 @@ class PyrexScanner(Scanner):
+         self.block_comment_depth -= 1
+         if self.block_comment_depth == 0:
+             self.begin(self.block_comment_return_state)
++            if self.block_comment_doc:
++                self.end_doc_block_comment()
++        elif self.block_comment_doc:
++            self.block_comment_doc.append(text)
++
++    def block_comment_text(self, text):
++        if self.block_comment_doc:
++            self.block_comment_doc.append(text)
++
++    def begin_doc_block_comment(self, text):
++        # '/** ... */' at nesting level 0 is a doc comment
++        is_doc = self.block_comment_depth == 0
++        self.begin_block_comment(text)
++        if is_doc:
++            self.block_comment_doc = ['']
++
++    def end_doc_block_comment(self):
++        parts = self.block_comment_doc[1:]
++        self.block_comment_doc = []
++        lines = ''.join(parts).split('\n')
++        # drop the ' * ' decoration of javadoc style comments
++        lines = [l.strip()[1:] if l.strip().startswith('*') else l for l in lines]
++        while lines and not lines[0].strip():
++            lines.pop(0)
++        while lines and not lines[-1].strip():
++            lines.pop()
++        # the comment documents the item after its closing '*/' line
++        last_line = self.get_current_scan_pos()[1]
++        for i, l in enumerate(lines):
++            self.doc_comments.append((last_line - len(lines) + 1 + i, False, l))
++
++    def blank_line(self, text):
++        self.blank_lines.add(self.get_current_scan_pos()[1])
++
++    def doc_comment(self, text):
++        # '/// text' documents the next item, '//! text' the enclosing module
++        text = text.strip()
++        inner = text.startswith('//!')
++        self.doc_comments.append((self.get_current_scan_pos()[1], inner, text[3:]))
++
++    def take_doc_comment(self, inner=False):
++        """
++        Return the doc comment just above the current token (outer; blank
++        and comment lines may come between), or the module's '//!' comments
++        (inner), as a docstring, or None.  Older doc comments are dropped.
++        """
++        if inner:
++            lines = [text for _, is_inner, text in self.doc_comments if is_inner]
++            self.doc_comments = [c for c in self.doc_comments if not c[1]]
++        else:
++            current_line = self.position()[1]
++            lines = []
++            expected = current_line - 1
++            for line, is_inner, text in reversed(self.doc_comments):
++                while expected > line and expected in self.blank_lines:
++                    expected -= 1
++                if is_inner or line != expected:
++                    break
++                lines.append(text)
++                expected -= 1
++            lines.reverse()
++            self.doc_comments = []
++        if not lines:
++            return None
++        from textwrap import dedent
++        from .StringEncoding import EncodedString
++        return EncodedString(dedent('\n'.join(lines)).strip('\n'))
+ 
+     def unclosed_block_comment(self, text):
+         self.error_at_scanpos("Unterminated block comment")

@@ -1,0 +1,146 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rin Arakaki <rnarkkx@gmail.com>
+Date: Mon, 12 Oct 2026 07:34:42 +0000
+Subject: [PATCH] oxython: add :: paths in expressions and types
+
+
+diff --git a/Cython/Compiler/Parsing.py b/Cython/Compiler/Parsing.py
+index a44e6ac5a..15835f82b 100644
+--- a/Cython/Compiler/Parsing.py
++++ b/Cython/Compiler/Parsing.py
+@@ -508,7 +508,7 @@ def p_power(s: PyrexScanner):
+         await_pos = s.position()
+         s.next()
+     n1 = p_atom(s)
+-    while s.sy in ('(', '[', '.'):
++    while s.sy in ('(', '[', '.') or looking_at_path_separator(s):
+         n1 = p_trailer(s, n1)
+     if await_pos:
+         n1 = ExprNodes.AwaitExprNode(await_pos, arg=n1)
+@@ -538,7 +538,7 @@ def p_trailer(s: PyrexScanner, node1):
+         return p_call(s, node1)
+     elif s.sy == '[':
+         return p_index(s, node1)
+-    else:  # s.sy == '.'
++    else:  # s.sy in ('.', '::')
+         s.next()
+         name = p_ident(s)
+         return ExprNodes.AttributeNode(pos,
+@@ -648,11 +648,22 @@ def p_call_build_packed_args(pos, positional_args: list, keyword_args: list) ->
+     return arg_tuple, keyword_dict
+ 
+ 
++@cython.cfunc
++def looking_at_path_separator(s: PyrexScanner) -> cython.bint:
++    # oxython 'module::name'.  Inside subscripts '::' is a slice, as in a[i::step].
++    return s.sy == '::' and not s.in_subscript and s.peek()[0] == 'IDENT'
++
++
+ @cython.cfunc
+ def p_call(s: PyrexScanner, function):
+     # s.sy == '('
+     pos = s.position()
+-    positional_args, keyword_args = p_call_parse_args(s)
++    in_subscript = s.in_subscript
++    s.in_subscript = False
++    try:
++        positional_args, keyword_args = p_call_parse_args(s)
++    finally:
++        s.in_subscript = in_subscript
+ 
+     if not keyword_args and len(positional_args) == 1 and isinstance(positional_args[0], list):
+         return ExprNodes.SimpleCallNode(pos, function=function, args=positional_args[0])
+@@ -690,14 +701,20 @@ def p_index(s: PyrexScanner, base):
+ 
+ @cython.cfunc
+ def p_subscript_list(s: PyrexScanner) -> tuple[list[list], cython.bint]:
+-    is_single_value = True
+-    items = [p_subscript(s)]
+-    while s.sy == ',':
+-        is_single_value = False
+-        s.next()
+-        if s.sy == ']':
+-            break
+-        items.append(p_subscript(s))
++    # oxython: '::' in subscripts and memoryview axes is a slice, not a path
++    in_subscript = s.in_subscript
++    s.in_subscript = True
++    try:
++        is_single_value = True
++        items = [p_subscript(s)]
++        while s.sy == ',':
++            is_single_value = False
++            s.next()
++            if s.sy == ']':
++                break
++            items.append(p_subscript(s))
++    finally:
++        s.in_subscript = in_subscript
+     return items, is_single_value
+ 
+ 
+@@ -778,6 +795,13 @@ def make_slice_node(pos, start, stop = None, step = None):
+ 
+ @cython.cfunc
+ def p_atom(s: PyrexScanner):
++    if s.in_subscript and s.sy in ('(', '[', '{'):
++        # brackets nested in a subscript end the slice context
++        s.in_subscript = False
++        try:
++            return p_atom(s)
++        finally:
++            s.in_subscript = True
+     pos = s.position()
+     sy = s.sy
+     if sy == '(':
+@@ -2965,7 +2989,7 @@ def p_c_simple_base_type(s: PyrexScanner, nonempty: cython.bint, templates=None)
+         #print "p_c_simple_base_type: looking_at_type_name at", s.position()
+         name = s.systring
+         s.next()
+-        while s.sy == '.':
++        while s.sy == '.' or s.sy == '::':
+             module_path.append(name)
+             s.next()
+             name = p_ident(s)
+@@ -3094,7 +3118,7 @@ def looking_at_expr(s: PyrexScanner) -> cython.bint:
+         dotted_path = []
+         s.next()
+ 
+-        while s.sy == '.':
++        while s.sy == '.' or s.sy == '::':
+             s.next()
+             dotted_path.append((s.systring, s.position()))
+             s.expect('IDENT')
+@@ -3212,7 +3236,7 @@ def looking_at_dotted_name(s: PyrexScanner) -> cython.bint:
+         name = s.systring
+         name_pos = s.position()
+         s.next()
+-        result: cython.bint = s.sy == '.'
++        result: cython.bint = s.sy == '.' or s.sy == '::'
+         s.put_back('IDENT', name, name_pos)
+         return result
+     else:
+diff --git a/Cython/Compiler/Scanning.pxd b/Cython/Compiler/Scanning.pxd
+index 155bed0b0..d4bb02c9c 100644
+--- a/Cython/Compiler/Scanning.pxd
++++ b/Cython/Compiler/Scanning.pxd
+@@ -35,6 +35,7 @@ cdef class PyrexScanner(Scanner):
+     cdef public set blank_lines
+     cdef public object item_doc
+     cdef public bint raw_ident
++    cdef public bint in_subscript
+     cdef public source_encoding
+     cdef dict keywords
+     cdef public list[Py_ssize_t] indentation_stack
+diff --git a/Cython/Compiler/Scanning.py b/Cython/Compiler/Scanning.py
+index 38db65f25..ece24124b 100644
+--- a/Cython/Compiler/Scanning.py
++++ b/Cython/Compiler/Scanning.py
+@@ -360,6 +360,7 @@ class PyrexScanner(Scanner):
+         Scanner.__init__(self, get_lexicon(self.oxython, self.rust_comments), file, filename, initial_pos)
+ 
+         self.raw_ident = False
++        self.in_subscript = False
+         if filename.is_python_file():
+             self.in_python_file = True
+             keywords = py_reserved_words

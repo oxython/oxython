@@ -1,0 +1,12 @@
+// mode: error
+// tag: oxython
+
+a = 256u8
+b = 128i8
+c = 65536u16
+
+_ERRORS = u"""
+4:4: literal 256 does not fit in 'u8'
+5:4: literal 128 does not fit in 'i8'
+6:4: literal 65536 does not fit in 'u16'
+"""

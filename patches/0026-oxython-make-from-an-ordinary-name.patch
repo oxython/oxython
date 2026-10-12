@@ -1,0 +1,119 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rin Arakaki <rnarkkx@gmail.com>
+Date: Mon, 12 Oct 2026 07:34:44 +0000
+Subject: [PATCH] oxython: make from an ordinary name
+
+
+diff --git a/Cython/Compiler/Parsing.py b/Cython/Compiler/Parsing.py
+index 79c292255..154669325 100644
+--- a/Cython/Compiler/Parsing.py
++++ b/Cython/Compiler/Parsing.py
+@@ -473,7 +473,7 @@ def p_yield_expression(s: PyrexScanner, statement_terminators: frozenset = state
+     pos = s.position()
+     s.next()
+     is_yield_from = False
+-    if s.sy == 'from':
++    if looking_at_from(s):
+         is_yield_from = True
+         s.next()
+     if s.sy != ')' and s.sy not in statement_terminators:
+@@ -674,6 +674,20 @@ def p_call_build_packed_args(pos, positional_args: list, keyword_args: list) ->
+     return arg_tuple, keyword_dict
+ 
+ 
++@cython.cfunc
++def looking_at_from(s: PyrexScanner) -> cython.bint:
++    # 'from' is a keyword in Cython but an ordinary name in oxython, where it
++    # only has its keyword meaning in 'yield from', 'raise ... from',
++    # 'extern from' and 'from ... import'.
++    return s.sy == 'from' or s.looking_at_keyword('from')
++
++
++@cython.cfunc
++def looking_at_from_import(s: PyrexScanner) -> cython.bint:
++    # oxython: 'from x import y' as opposed to an expression using a name 'from'
++    return s.looking_at_keyword('from') and s.peek()[0] in ('IDENT', '.', '..', '...')
++
++
+ @cython.cfunc
+ def looking_at_path_separator(s: PyrexScanner) -> cython.bint:
+     # oxython 'module::name'.  Inside subscripts '::' is a slice, as in a[i::step].
+@@ -2005,7 +2019,7 @@ def p_raise_statement(s: PyrexScanner):
+             if s.sy == ',':
+                 s.next()
+                 exc_tb = p_test(s)
+-        elif s.sy == 'from':
++        elif looking_at_from(s):
+             s.next()
+             cause = p_test(s)
+     if exc_type or exc_value or exc_tb:
+@@ -2321,7 +2335,7 @@ def p_for_bounds(s: PyrexScanner, allow_testlist: cython.bint = True, is_async:
+         iterator = p_for_iterator(s, allow_testlist, is_async=is_async)
+         return dict(target=target, iterator=iterator)
+     elif not s.in_python_file and not is_async:
+-        if s.sy == 'from':
++        if looking_at_from(s):
+             s.next()
+             bound1 = p_bit_expr(s)
+         else:
+@@ -2657,7 +2671,7 @@ def p_simple_statement(s: PyrexScanner, first_statement: cython.bint = 0):
+         node = p_raise_statement(s)
+     elif s.sy in ('import', 'cimport'):
+         node = p_import_statement(s)
+-    elif s.sy == 'from':
++    elif s.sy == 'from' or looking_at_from_import(s):
+         node = p_from_import_statement(s, first_statement = first_statement)
+     elif s.sy == 'yield':
+         node = p_yield_statement(s)
+@@ -3852,7 +3866,7 @@ def p_cdef_statement(s: PyrexScanner, pos, ctx):
+     if ctx.api:
+         if ctx.visibility not in ('private', 'public'):
+             error(pos, "Cannot combine 'api' with '%s'" % ctx.visibility)
+-    if (ctx.visibility == 'extern') and s.sy == 'from':
++    if (ctx.visibility == 'extern') and looking_at_from(s):
+         return p_cdef_extern_block(s, pos, ctx)
+     elif s.sy == 'import':
+         s.next()
+@@ -3897,7 +3911,9 @@ def p_cdef_extern_block(s: PyrexScanner, pos, ctx):
+     if ctx.overridable:
+         error(pos, "cdef extern blocks cannot be declared cpdef")
+     include_file = None
+-    s.expect('from')
++    if not looking_at_from(s):
++        s.expected('from')
++    s.next()
+     if s.sy == '*':
+         s.next()
+     else:
+@@ -4384,7 +4400,7 @@ def looking_at_oxython_item(s: PyrexScanner, ctx) -> cython.bint:
+     next_sy, next_word = s.peek()
+     if word in ('pub', 'extern', 'api', 'readonly'):
+         # only before an item, so that C declarations like 'extern void f()' keep working
+-        return next_sy == 'from' or next_sy == 'IDENT' and (
++        return next_sy == 'from' or next_word == 'from' or next_sy == 'IDENT' and (
+             next_word in _oxython_item_words or next_word in ('api', 'fn'))
+     if word == 'const' and (ctx.cdef_flag or ctx.level == 'cpp_class' or ctx.visibility == 'extern'):
+         # in 'cdef' blocks, extern blocks and C++ classes 'const' is the C qualifier
+@@ -4422,7 +4438,7 @@ def p_oxython_item(s: PyrexScanner, pos, ctx, decorators):
+         error(pos, "Cannot combine 'api' with '%s'" % visibility)
+     ctx = ctx(visibility=visibility, api=api, overridable=overridable)
+ 
+-    if visibility == 'extern' and s.sy == 'from':
++    if visibility == 'extern' and looking_at_from(s):
+         check_oxython_level(s, ctx, pos, "extern block")
+         node = p_cdef_extern_block(s, pos, ctx)
+     elif (s.looking_at_keyword('fn') or
+diff --git a/Cython/Compiler/Scanning.py b/Cython/Compiler/Scanning.py
+index 84a8dc664..715470ae5 100644
+--- a/Cython/Compiler/Scanning.py
++++ b/Cython/Compiler/Scanning.py
+@@ -369,6 +369,9 @@ class PyrexScanner(Scanner):
+             self.in_python_file = False
+             keywords = pyx_reserved_words
+         self.keywords = {keyword: keyword for keyword in keywords}
++        if self.oxython:
++            # 'from' is an ordinary name in oxython (contextual where needed)
++            del self.keywords['from']
+ 
+         self.async_enabled = 0
+ 

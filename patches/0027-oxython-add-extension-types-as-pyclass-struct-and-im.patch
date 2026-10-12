@@ -1,0 +1,229 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rin Arakaki <rnarkkx@gmail.com>
+Date: Mon, 12 Oct 2026 07:34:44 +0000
+Subject: [PATCH] oxython: add extension types as #[pyclass] struct and impl
+
+
+diff --git a/Cython/Compiler/Parsing.py b/Cython/Compiler/Parsing.py
+index 154669325..94efd9b4a 100644
+--- a/Cython/Compiler/Parsing.py
++++ b/Cython/Compiler/Parsing.py
+@@ -4345,6 +4345,13 @@ def make_oxython_from_cimport(s: PyrexScanner, pos, module_path, level, imported
+         relative_level=level, imported_names=imported_names)
+ 
+ 
++@cython.cfunc
++def is_pyclass_attribute(decorator) -> cython.bint:
++    # '#[pyclass]' marks a struct as a Python extension type
++    node = decorator.decorator
++    return node.is_name and node.name == 'pyclass'
++
++
+ @cython.cfunc
+ def looking_at_oxython_fn_def(s: PyrexScanner, ctx) -> cython.bint:
+     # 'fn name(...)' without a return type is a Python function, replacing 'def'.
+@@ -4380,7 +4387,7 @@ def reject_def_in_oxython(s: PyrexScanner):
+ 
+ # words that can start an oxython item
+ _oxython_item_words = cython.declare(frozenset, frozenset((
+-    'fn', 'let', 'static', 'const', 'type', 'struct', 'union', 'enum', 'packed')))
++    'fn', 'let', 'static', 'const', 'type', 'struct', 'union', 'enum', 'packed', 'impl')))
+ 
+ _oxython_cdef_levels = cython.declare(tuple, (
+     'module', 'module_pxd', 'function', 'c_class', 'c_class_pxd', 'cpp_class'))
+@@ -4450,6 +4457,15 @@ def p_oxython_item(s: PyrexScanner, pos, ctx, decorators):
+         node = p_oxython_const(s, pos, ctx)
+     elif s.looking_at_keyword('type'):
+         node = p_oxython_type_alias(s, pos, ctx)
++    elif s.looking_at_keyword('struct') and (
++            any(is_pyclass_attribute(d) for d in decorators or ()) or looking_at_extension_struct(s)):
++        # #[pyclass] struct Name(Base): ...     a Python extension type
++        if ctx.level not in ('module', 'module_pxd'):
++            error(pos, "Extension type definition not allowed here")
++        decorators = [d for d in decorators or () if not is_pyclass_attribute(d)]
++        node = p_c_class_definition(s, pos, ctx, struct_fields=True)
++    elif s.looking_at_keyword('impl'):
++        node = p_oxython_impl(s, pos, ctx)
+     elif s.sy == 'IDENT' and s.systring in struct_enum_union:
+         if ctx.level not in ('module', 'module_pxd') and not (
+                 ctx.level == 'cpp_class' and s.systring == 'enum'):
+@@ -4462,6 +4478,8 @@ def p_oxython_item(s: PyrexScanner, pos, ctx, decorators):
+ 
+     if decorators:
+         allowed = (Nodes.CFuncDefNode, Nodes.CVarDefNode, Nodes.CClassDefNode)
++        if is_oxython_impl(node):
++            error(pos, "Decorators can only be followed by functions or classes")
+         if ctx.allow_struct_enum_decorator:
+             allowed += (Nodes.CStructOrUnionDefNode, Nodes.CEnumDefNode)
+         if not isinstance(node, allowed):
+@@ -4470,6 +4488,133 @@ def p_oxython_item(s: PyrexScanner, pos, ctx, decorators):
+     return node
+ 
+ 
++@cython.cfunc
++def looking_at_extension_struct(s: PyrexScanner) -> cython.bint:
++    # 'struct mod::Name [object ...]': a qualified name or type options make an
++    # extension type, as in 'cdef extern class' / 'cdef public class'
++    saved = [(s.sy, s.systring, s.position())]
++    s.next()
++    qualified = False
++    if s.sy == 'IDENT':
++        saved.append((s.sy, s.systring, s.position()))
++        s.next()
++        while s.sy in ('::', '.'):
++            qualified = True
++            saved.append((s.sy, s.systring, s.position()))
++            s.next()
++            if s.sy != 'IDENT':
++                break
++            saved.append((s.sy, s.systring, s.position()))
++            s.next()
++    result = qualified or s.sy == '['
++    for sv in reversed(saved):
++        s.put_back(*sv)
++    return result
++
++
++def p_oxython_struct_fields(s: PyrexScanner, level):
++    # body of an extension type struct: '[pub | readonly] <C declaration>' lines
++    s.expect(':')
++    s.expect('NEWLINE')
++    s.expect_indent()
++    doc = p_doc_string(s)
++    pos = s.position()
++    stats = []
++    while s.sy not in ('DEDENT', 'EOF'):
++        if s.sy == 'pass':
++            s.next()
++            s.expect_newline("Expected a newline")
++            continue
++        field_pos = s.position()
++        field_doc = s.take_doc_comment() if s.rust_comments else None
++        if s.looking_at_keyword('fn') or s.sy == 'IDENT' and s.systring in ('const', 'static') and s.peek()[1] == 'fn':
++            p_oxython_fn(s, field_pos, Ctx(level=level))
++            error(field_pos, "Methods belong in an 'impl' block")
++            continue
++        visibility = 'private'
++        if s.looking_at_keyword('pub'):
++            s.next()
++            visibility = 'public'
++        elif s.looking_at_keyword('readonly'):
++            s.next()
++            visibility = 'readonly'
++        node = p_c_func_or_var_declaration(s, field_pos, Ctx(level=level, visibility=visibility))
++        if isinstance(node, Nodes.CFuncDefNode) or any(declares_function(d) for d in node.declarators):
++            error(field_pos, "Methods belong in an 'impl' block")
++            continue
++        if field_doc is not None:
++            node.doc = field_doc
++        stats.append(node)
++    s.expect_dedent()
++    return doc, Nodes.StatListNode(pos, stats=stats)
++
++
++def p_oxython_impl(s: PyrexScanner, pos, ctx):
++    # impl Name: <methods>     merged into the extension type 'Name'
++    if ctx.level not in ('module', 'module_pxd'):
++        error(pos, "impl block not allowed here")
++    s.next()  # 'impl'
++    name = p_ident(s)
++    level = 'c_class_pxd' if ctx.level == 'module_pxd' else 'c_class'
++    doc, body = p_suite_with_docstring(s, Ctx(level=level))
++    if not isinstance(body, Nodes.StatListNode):
++        body = Nodes.StatListNode(body.pos, stats=[body])
++    body.pos = pos
++    body.oxython_impl_name = name
++    body.oxython_impl_doc = doc
++    return body
++
++
++@cython.cfunc
++def is_oxython_impl(node) -> cython.bint:
++    return getattr(node, 'oxython_impl_name', None) is not None
++
++
++def merge_oxython_impls(body, in_pxd):
++    # Move the methods of 'impl Name:' blocks into the extension type 'Name'.
++    # Without a struct in this file, the impl implements a type declared in
++    # the module's .oxd file.
++    stats = body.stats if isinstance(body, Nodes.StatListNode) else [body]
++    if not any(is_oxython_impl(stat) for stat in stats):
++        return body
++    classes = {}
++    structs = set()
++    for stat in stats:
++        if isinstance(stat, Nodes.CClassDefNode) and not stat.module_name:
++            classes[stat.class_name] = stat
++        elif isinstance(stat, Nodes.CStructOrUnionDefNode):
++            structs.add(stat.name)
++    result = []
++    for stat in stats:
++        if not is_oxython_impl(stat):
++            result.append(stat)
++            continue
++        name = stat.oxython_impl_name
++        if name in structs:
++            error(stat.pos, "'impl %s' needs a '#[pyclass] struct %s'" % (name, name))
++            continue
++        cls = classes.get(name)
++        if cls is None:
++            cls = classes[name] = Nodes.CClassDefNode(
++                stat.pos, visibility='private', typedef_flag=False, api=False,
++                module_name=EncodedString(''), class_name=name, as_name=name,
++                bases=ExprNodes.TupleNode(stat.pos, args=[]),
++                objstruct_name=None, typeobj_name=None, check_size=None,
++                in_pxd=in_pxd, doc=None, body=None)
++            result.append(cls)
++        if cls.body is None:
++            cls.body = Nodes.StatListNode(stat.pos, stats=[])
++        elif not isinstance(cls.body, Nodes.StatListNode):
++            cls.body = Nodes.StatListNode(cls.body.pos, stats=[cls.body])
++        cls.body.stats.extend(stat.stats)
++        if stat.oxython_impl_doc and not cls.doc:
++            cls.doc = stat.oxython_impl_doc
++    if isinstance(body, Nodes.StatListNode):
++        body.stats = result
++        return body
++    return Nodes.StatListNode(body.pos, stats=result)
++
++
+ @cython.cfunc
+ def check_oxython_level(s: PyrexScanner, ctx, pos, what):
+     if ctx.level not in _oxython_cdef_levels:
+@@ -4750,12 +4895,12 @@ def p_class_statement(s: PyrexScanner, decorators):
+ 
+ 
+ @cython.cfunc
+-def p_c_class_definition(s: PyrexScanner, pos,  ctx):
+-    # s.sy == 'class'
++def p_c_class_definition(s: PyrexScanner, pos,  ctx, struct_fields: cython.bint = False):
++    # s.sy == 'class' (or 'struct' for an oxython extension type)
+     s.next()
+     module_path = []
+     class_name = p_ident(s)
+-    while s.sy == '.':
++    while s.sy == '.' or s.sy == '::':
+         s.next()
+         module_path.append(class_name)
+         class_name = p_ident(s)
+@@ -4787,7 +4932,10 @@ def p_c_class_definition(s: PyrexScanner, pos,  ctx):
+             body_level = 'c_class_pxd'
+         else:
+             body_level = 'c_class'
+-        doc, body = p_suite_with_docstring(s, Ctx(level=body_level))
++        if struct_fields:
++            doc, body = p_oxython_struct_fields(s, body_level)
++        else:
++            doc, body = p_suite_with_docstring(s, Ctx(level=body_level))
+     else:
+         s.expect_newline("Syntax error in C class definition")
+         doc = None
+@@ -4998,6 +5146,8 @@ def p_module(s: PyrexScanner, pxd, full_module_name, ctx=Ctx):
+         # oxython: '//!' comments document the module
+         doc = s.take_doc_comment(inner=True)
+     body = p_statement_list(s, ctx(level=level), first_statement=True)
++    if s.oxython:
++        body = merge_oxython_impls(body, pxd)
+     if s.sy != 'EOF':
+         s.error("Syntax error in statement [%s,%s]" % (
+             repr(s.sy), repr(s.systring)))

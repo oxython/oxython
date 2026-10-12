@@ -1,0 +1,76 @@
+// mode: run
+// tag: oxython
+
+/// A bank account.
+#[pyclass]
+struct Account:
+    pub i32 owner_id
+    readonly f64 balance
+    f64 limit
+
+impl Account:
+    fn __init__(self, i32 owner_id):
+        self.owner_id = owner_id
+        self.limit = 100
+
+    fn deposit(self, f64 amount):
+        self.add(amount)
+
+// a type can have several impl blocks
+impl Account:
+    fn void add(self, f64 amount) noexcept:
+        self.balance += amount
+
+    static fn Account open_with(f64 amount):
+        let Account account = Account(0)
+        account.add(amount)
+        return account
+
+    #[staticmethod]
+    fn make(amount):
+        return Account.open_with(amount)
+
+#[pyclass]
+struct Savings(Account):
+    pub f64 rate
+
+impl Savings:
+    fn yearly(self):
+        return self.balance * self.rate
+
+/// '#[pyclass] struct' declares an extension type and its fields; 'impl'
+/// blocks hold its methods.
+///
+/// >>> test_account()
+/// (7, 2.5, 'A bank account.', 3.0)
+fn test_account():
+    let Account a = Account(7)
+    a.deposit(2.5)
+    return a.owner_id, a.balance, Account.__doc__, Account.make(3).balance
+
+/// 'pub' fields are readable and writable from Python, 'readonly' fields
+/// are readable, and other fields are C only.
+///
+/// >>> test_visibility()
+/// (True, False, False)
+fn test_visibility():
+    a = Account(1)
+    try:
+        setattr(a, 'balance', 1.0)
+        writable = True
+    except AttributeError:
+        writable = False
+    return hasattr(a, 'owner_id'), writable, hasattr(a, 'limit')
+
+/// >>> test_inheritance()
+/// 5.0
+fn test_inheritance():
+    s = Savings(1)
+    s.rate = 0.5
+    s.deposit(10)
+    return s.yearly()
+
+/// >>> test_no_dict()
+/// False
+fn test_no_dict():
+    return hasattr(Account(1), '__dict__')

@@ -1,0 +1,153 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rin Arakaki <rnarkkx@gmail.com>
+Date: Mon, 12 Oct 2026 07:34:39 +0000
+Subject: [PATCH] oxython: add true, false and typed numeric literals
+
+
+diff --git a/Cython/Compiler/ExprNodes.py b/Cython/Compiler/ExprNodes.py
+index e9e6aacb1..166e7a5ed 100644
+--- a/Cython/Compiler/ExprNodes.py
++++ b/Cython/Compiler/ExprNodes.py
+@@ -1750,6 +1750,29 @@ class FloatNode(ConstNode):
+             self.result_code = c_value
+ 
+ 
++class TypedIntNode(IntNode):
++    # An oxython typed integer literal such as 10u8.
++    # The C code carries an explicit cast so that C sees the declared type.
++
++    def get_constant_c_result_code(self):
++        code = IntNode.get_constant_c_result_code(self)
++        if self.type.is_int:
++            code = "((%s)%s)" % (self.type.empty_declaration_code(), code)
++        return code
++
++
++class TypedFloatNode(FloatNode):
++    # An oxython typed float literal such as 2.5f32.
++
++    def get_constant_c_result_code(self):
++        code = FloatNode.get_constant_c_result_code(self)
++        if self.type.is_float:
++            if self.type is PyrexTypes.c_longdouble_type and code == self.value:
++                code += "L"
++            code = "((%s)%s)" % (self.type.empty_declaration_code(), code)
++        return code
++
++
+ @cython.cfunc
+ def _analyse_name_as_type(name, pos, env):
+     ctype = PyrexTypes.parse_basic_type(name)
+diff --git a/Cython/Compiler/Lexicon.py b/Cython/Compiler/Lexicon.py
+index 8dc034417..5e13a22c1 100644
+--- a/Cython/Compiler/Lexicon.py
++++ b/Cython/Compiler/Lexicon.py
+@@ -58,6 +58,12 @@ def make_lexicon(oxython=False, rust_comments=False):
+     intsuffix = (Opt(Any("Uu")) + Opt(Any("Ll")) + Opt(Any("Ll"))) | (Opt(Any("Ll")) + Opt(Any("Ll")) + Opt(Any("Uu")))
+     intliteral = intconst + intsuffix
+     fltconst = (decimal_fract + Opt(exponent)) | (decimal + exponent)
++    if oxython:
++        # Rust-style typed literals: 10u8, 1_000i64, 2.5f32, 1f64
++        int_type_suffix = Str("i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "isize", "usize")
++        float_type_suffix = Str("f32", "f64")
++        intliteral = intliteral | (intconst + int_type_suffix)
++        fltconst = fltconst | ((fltconst | decimal) + float_type_suffix)
+     imagconst = (intconst | fltconst) + Any("jJ")
+ 
+     # invalid combinations of prefixes are caught in p_string_literal
+diff --git a/Cython/Compiler/Parsing.py b/Cython/Compiler/Parsing.py
+index be48aef01..7eb131a4a 100644
+--- a/Cython/Compiler/Parsing.py
++++ b/Cython/Compiler/Parsing.py
+@@ -12,7 +12,7 @@ cython.declare(Nodes=object, ExprNodes=object, EncodedString=object,
+                Future=object, Options=object, error=object, warning=object,
+                Builtin=object, ModuleNode=object, _unicode=object, _bytes=object,
+                re=object, _parse_escape_sequences=object, _parse_escape_sequences_raw=object,
+-               partial=object, reduce=object,
++               partial=object, reduce=object, PyrexTypes=object, Utils=object,
+                _CDEF_MODIFIERS=tuple, COMMON_BINOP_MISTAKES=dict)
+ 
+ from io import StringIO
+@@ -23,6 +23,8 @@ from functools import partial, reduce
+ from .Scanning import PyrexScanner, FileSourceDescriptor, tentatively_scan
+ from . import Nodes
+ from . import ExprNodes
++from . import PyrexTypes
++from .. import Utils
+ from . import MatchCaseNodes
+ from . import Builtin
+ from . import StringEncoding
+@@ -786,6 +788,8 @@ def p_atom(s: PyrexScanner):
+     elif sy == 'FLOAT':
+         value = s.systring
+         s.next()
++        if s.oxython:
++            return p_oxython_float_literal(pos, value)
+         return ExprNodes.FloatNode(pos, value = value)
+     elif sy == 'IMAG':
+         value = s.systring[:-1]
+@@ -843,6 +847,8 @@ def p_atom_ident_constants(s: PyrexScanner):
+         result = ExprNodes.BoolNode(pos, value=True)
+     elif name == "False":
+         result = ExprNodes.BoolNode(pos, value=False)
++    elif s.oxython and not s.raw_ident and name in ("true", "false"):
++        result = ExprNodes.BoolNode(pos, value=name == "true")
+     elif name == "NULL" and not s.in_python_file:
+         result = ExprNodes.NullNode(pos)
+     else:
+@@ -856,6 +862,10 @@ def p_int_literal(s: PyrexScanner):
+     pos = s.position()
+     value: str = cython.cast(str, s.systring)
+     s.next()
++    if s.oxython:
++        m = _match_oxython_int_suffix(value)
++        if m is not None:
++            return make_oxython_int_literal(pos, m.group(1), m.group(2))
+     unsigned = ""
+     longness = ""
+     while value[-1] in "UuLl":
+@@ -884,6 +894,44 @@ def p_int_literal(s: PyrexScanner):
+                              longness = longness)
+ 
+ 
++_match_oxython_int_suffix = cython.declare(object, re.compile(
++    r"^(.*?)(i8|i16|i32|i64|u8|u16|u32|u64|isize|usize)$").match)
++_match_oxython_float_suffix = cython.declare(object, re.compile(
++    r"^(.*?)(f32|f64)$").match)
++
++
++def make_oxython_int_literal(pos, digits, suffix):
++    # 10u8 => the C integer constant 10 with type unsigned char
++    signed, longness, c_name, _ = oxython_c_types[suffix]
++    c_type = PyrexTypes.simple_c_type(signed, longness, c_name)
++    try:
++        int_value = Utils.str_to_number(digits)
++    except ValueError:
++        int_value = None
++    if int_value is not None and c_type.is_int:
++        bits = 8 * {"i8": 1, "u8": 1, "i16": 2, "u16": 2, "i32": 4, "u32": 4,
++                    "i64": 8, "u64": 8}.get(suffix, 8)
++        limit = 2 ** bits if suffix.startswith('u') else 2 ** (bits - 1)
++        if int_value >= limit:
++            error(pos, "literal %s does not fit in '%s'" % (digits, suffix))
++    return ExprNodes.TypedIntNode(
++        pos, value=digits, type=c_type, is_c_literal=True,
++        unsigned="U" if suffix.startswith('u') else "",
++        longness="LL" if suffix in ("i64", "u64") else "")
++
++
++def p_oxython_float_literal(pos, value):
++    # 2.5f32 / 1f64 => a C floating point constant of that type
++    m = _match_oxython_float_suffix(value)
++    if m is None:
++        return ExprNodes.FloatNode(pos, value=value)
++    digits, suffix = m.group(1), m.group(2)
++    if not any(c in digits for c in '.eE'):
++        digits += '.0'
++    signed, longness, c_name, _ = oxython_c_types[suffix]
++    return ExprNodes.TypedFloatNode(pos, value=digits, type=PyrexTypes.simple_c_type(signed, longness, c_name))
++
++
+ @cython.cfunc
+ def p_name(s: PyrexScanner, name):
+     pos = s.position()

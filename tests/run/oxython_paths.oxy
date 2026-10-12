@@ -1,0 +1,48 @@
+// mode: run
+// tag: oxython
+
+use libc::stdio
+use libc::math
+use libc::stdlib
+use cython
+
+import os.path as ospath
+
+/// 'module::name' is attribute access on modules, types and objects.
+///
+/// >>> module_paths()
+/// (2.0, True, 'b')
+fn module_paths():
+    return math::sqrt(4), stdio::EOF < 0, ospath::basename("a/b")
+
+/// >>> type_paths()
+/// (True, True)
+fn type_paths():
+    let stdio::FILE *f = NULL
+    let cython::Py_ssize_t n = 3
+    return f == NULL, sizeof(stdlib::div_t) == 2 * sizeof(i32)
+
+/// Inside a subscript, '::' stays a slice even before a name.
+///
+/// >>> slices_still_win(list(range(10)), 1, 3)
+/// ([1, 4, 7], [0, 3, 6, 9], [1, 4, 7])
+fn slices_still_win(seq, i, step):
+    return seq[i::step], seq[::step], seq[(i)::step]
+
+/// Brackets nested in a subscript bring paths back.
+///
+/// >>> paths_inside_calls_in_subscripts([3, 4, 5])
+/// 5
+fn paths_inside_calls_in_subscripts(seq):
+    return seq[int(math::sqrt(4))]
+
+class Config:
+    level = 3
+
+    class Inner:
+        name = "inner"
+
+/// >>> object_paths()
+/// (3, 'inner')
+fn object_paths():
+    return Config::level, Config::Inner::name

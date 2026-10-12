@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Rin Arakaki <rnarkkx@gmail.com>
+Date: Mon, 12 Oct 2026 07:34:40 +0000
+Subject: [PATCH] oxython: add static for module and class level C variables
+
+
+diff --git a/Cython/Compiler/Parsing.py b/Cython/Compiler/Parsing.py
+index 0086ea851..bb524564a 100644
+--- a/Cython/Compiler/Parsing.py
++++ b/Cython/Compiler/Parsing.py
+@@ -4051,7 +4051,7 @@ def looking_at_oxython_item(s: PyrexScanner, ctx) -> cython.bint:
+     if word not in _oxython_item_words:
+         return False
+     next_sy, next_word = s.peek()
+-    if word in ('const', 'static'):
++    if word == 'const':
+         return next_word == 'fn'
+     return next_sy == 'IDENT'
+ 
+@@ -4066,7 +4066,7 @@ def p_oxython_item(s: PyrexScanner, pos, ctx, decorators):
+     if (s.looking_at_keyword('fn') or
+             s.sy == 'IDENT' and s.systring in ('const', 'static') and s.peek()[1] == 'fn'):
+         node = p_oxython_fn(s, pos, ctx)
+-    elif s.looking_at_keyword('let'):
++    elif s.looking_at_keyword('let') or s.looking_at_keyword('static'):
+         node = p_oxython_let(s, pos, ctx)
+     else:
+         s.error("Expected an item")
+@@ -4135,8 +4135,11 @@ def p_oxython_fn(s: PyrexScanner, pos, ctx):
+ 
+ def p_oxython_let(s: PyrexScanner, pos, ctx):
+     # let <type> <declarator> [= <expr>], ...
++    # static <type> <declarator> [= <expr>], ...
+     keyword = s.systring
+     s.next()
++    if keyword == 'static' and ctx.level in ('function', 'other'):
++        error(pos, "static variables are not supported inside functions")
+     if ctx.level not in _oxython_cdef_levels:
+         error(pos, "%s statement not allowed here; C variables must be declared "
+                    "at the top level of a function, class or module" % keyword)

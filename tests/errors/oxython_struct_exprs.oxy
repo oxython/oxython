@@ -1,0 +1,12 @@
+// mode: error
+// tag: oxython
+
+struct Point:
+    double x
+    double y
+
+let Point p = Point { x: 1, y: 2 }
+
+_ERRORS = u"""
+8:23: Expected 'field = value' in struct expression
+"""
